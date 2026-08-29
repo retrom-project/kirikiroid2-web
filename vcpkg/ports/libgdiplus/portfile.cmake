@@ -27,6 +27,7 @@ endif()
 vcpkg_cmake_configure(SOURCE_PATH "${SOURCE_PATH}" OPTIONS ${OPTIONS})
 
 vcpkg_cmake_install()
+vcpkg_cmake_config_fixup(CONFIG_PATH share/libgdiplus)
 vcpkg_fixup_pkgconfig()
 vcpkg_copy_pdbs()
 
