@@ -21,6 +21,7 @@
     var BLOCK_SIZE = 256 * 1024;          // 块级缓存粒度
     var BLOCK_CACHE_BUDGET = 16 * 1024 * 1024; // 块缓存内存预算
     var DIRECT_READ_THRESHOLD = 512 * 1024;    // ≥ 此长度的读绕过块缓存直读源
+    var FULL_DOWNLOAD_FALLBACK_MAX_BYTES = 4 * 1024 * 1024;
     // 每个页面实例在这个根目录下使用独立的会话目录。Document 销毁与
     // FileSystemWritableFileStream 的底层关闭不是原子操作；若固定复用
     // vlfs-tmp/eN，新页面可能在旧写流收尾期间撞上
@@ -178,6 +179,40 @@
             });
         }
         return out;
+    }
+
+    async function validateRangeResponse(resp, url, pos, len, size) {
+        if (resp.status === 206) {
+            var expected = 'bytes ' + pos + '-' + (pos + len - 1) + '/' + size;
+            var actual = resp.headers.get('Content-Range');
+            var contentLength = resp.headers.get('Content-Length');
+            if (actual !== expected || contentLength !== String(len))
+                throw new Error('vlfs: range response mismatch ' + url);
+            return 'range';
+        }
+        if (resp.status !== 200)
+            throw new Error('vlfs: range fetch ' + url + ': ' + resp.status);
+        if (size > FULL_DOWNLOAD_FALLBACK_MAX_BYTES) {
+            if (resp.body) {
+                try { await resp.body.cancel(); } catch (ignored) {}
+            }
+            throw new Error('vlfs: range required for large remote ' + url);
+        }
+        var fullLength = resp.headers.get('Content-Length');
+        if (fullLength !== null && fullLength !== String(size))
+            throw new Error('vlfs: full response size mismatch ' + url);
+        return 'full';
+    }
+
+    function exactRemoteBytes(bytes, mode, url, pos, len, size) {
+        if (mode === 'range') {
+            if (bytes.byteLength !== len)
+                throw new Error('vlfs: short range response ' + url);
+            return new Uint8Array(bytes).slice();
+        }
+        if (bytes.byteLength !== size || pos + len > size)
+            throw new Error('vlfs: full response size mismatch ' + url);
+        return new Uint8Array(bytes, pos, len).slice();
     }
 
     var VLFS = {
@@ -513,7 +548,8 @@
 
         registerRemote(path, url, size, supportsRanges, requestHeaders) {
             return this._register(path, {
-                kind: supportsRanges ? 'remote' : 'blob',
+                kind: supportsRanges ? 'remote' :
+                    size <= FULL_DOWNLOAD_FALLBACK_MAX_BYTES ? 'blob' : 'remote-required',
                 size: size, url: url, blob: null,
                 requestHeaders: cloneRequestHeaders(requestHeaders)
             });
@@ -1053,12 +1089,18 @@
             switch (e.kind) {
                 case 'blob': {
                     if (!e.blob) { // registerRemote 的非 Range 降级：懒整包拉取为 Blob
+                        if (e.size > FULL_DOWNLOAD_FALLBACK_MAX_BYTES)
+                            throw new Error('vlfs: range required for large remote ' + e.url);
                         if (!e._fetch) {
+                            var declaredSize = e.size;
                             e._fetch = fetch(e.url, {
                                 headers: cloneRequestHeaders(e.requestHeaders)
-                            }).then(function (r) {
+                            }).then(async function (r) {
                                 if (!r.ok) throw new Error('fetch ' + e.url + ': ' + r.status);
-                                return r.blob();
+                                var blob = await r.blob();
+                                if (blob.size !== declaredSize)
+                                    throw new Error('vlfs: full response size mismatch ' + e.url);
+                                return blob;
                             });
                         }
                         e.blob = await e._fetch;
@@ -1078,20 +1120,22 @@
                     var resp = await fetch(e.url, {
                         headers: rangeHeaders
                     });
-                    if (resp.status !== 206 && resp.status !== 200)
-                        throw new Error('range fetch ' + e.url + ': ' + resp.status);
-                    if (resp.status === 200) {
-                        // 服务器忽略 Range：缓存这一次完整响应，后续切片读取，
-                        // 避免每个块都重新下载整个远程文件。
-                        e.blob = await resp.blob();
-                        e.size = e.blob.size;
+                    var responseMode = await validateRangeResponse(
+                        resp, e.url, pos, len, e.size);
+                    if (responseMode === 'full') {
+                        var whole = await resp.blob();
+                        if (whole.size !== e.size)
+                            throw new Error('vlfs: full response size mismatch ' + e.url);
+                        e.blob = whole;
                         e.kind = 'blob';
-                        var wholeBuf = await e.blob.slice(pos, pos + len).arrayBuffer();
-                        return new Uint8Array(wholeBuf);
+                        return new Uint8Array(await whole.slice(pos, pos + len).arrayBuffer());
                     }
                     var rbuf = await resp.arrayBuffer();
-                    return new Uint8Array(rbuf, 0, Math.min(len, rbuf.byteLength)).slice();
+                    return exactRemoteBytes(
+                        rbuf, responseMode, e.url, pos, len, e.size);
                 }
+                case 'remote-required':
+                    throw new Error('vlfs: range required for large remote ' + e.url);
                 case 'zip': {
                     if (e.method === 0) {
                         if (e.dataOffset < 0) await this._resolveZipDataOffset(e);

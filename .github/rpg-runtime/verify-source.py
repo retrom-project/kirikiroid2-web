@@ -61,6 +61,11 @@ def main() -> int:
     require("vcpkg/triplets/wasm32-emscripten.cmake", (
         'VCPKG_MAKE_BUILD_TRIPLET "--host=wasm32-unknown-emscripten"',
     ))
+    require("platforms/web/vlfs.js", (
+        "FULL_DOWNLOAD_FALLBACK_MAX_BYTES = 4 * 1024 * 1024",
+        "range required for large remote",
+        "range response mismatch",
+    ))
     return 0
 
 
