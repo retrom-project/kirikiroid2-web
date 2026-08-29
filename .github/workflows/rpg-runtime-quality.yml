@@ -22,7 +22,9 @@ jobs:
           fetch-depth: 0
           submodules: recursive
       - name: Validate fork source contract
-        run: python3 .github/rpg-runtime/verify-source.py
+        run: |
+          python3 .github/rpg-runtime/verify-source.py
+          node .github/rpg-runtime/test-vlfs.mjs
       - name: Build Web assets
         run: .github/rpg-runtime/build-web.sh "$RUNNER_TEMP/rpg-runtime-output"
       - name: Validate candidate assets
@@ -32,3 +34,16 @@ jobs:
             --repository "https://github.com/$GITHUB_REPOSITORY" \
             --tag rpg-runtime-g338d2029f169-r1-rc.1 \
             --commit "$GITHUB_SHA"
+      - name: Upload integration candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpg-runtime-kirikiri-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rpg-runtime-output/index.js
+            ${{ runner.temp }}/rpg-runtime-output/index.wasm
+            ${{ runner.temp }}/rpg-runtime-output/vlfs.js
+            ${{ runner.temp }}/rpg-runtime-output/assets.zip
+            ${{ runner.temp }}/rpg-runtime-output/LICENSE
+            ${{ runner.temp }}/rpg-runtime-output/rpg-runtime-release.json
+          if-no-files-found: error
+          retention-days: 7
