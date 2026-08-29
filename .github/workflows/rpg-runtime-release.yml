@@ -1,0 +1,56 @@
+name: RPG Runtime Release
+
+on:
+  push:
+    tags: ["rpg-runtime-g338d2029f169-r*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rpg-runtime-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Validate release identity
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^rpg-runtime-g338d2029f169-r[1-9][0-9]*$ ]]
+          test "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" = tag
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --no-tags origin \
+            '+refs/heads/retrom/g338d2029f169:refs/remotes/origin/retrom/g338d2029f169'
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/retrom/g338d2029f169
+          git merge-base --is-ancestor 338d2029f16969b84becfd163c67f99740e28296 "$GITHUB_SHA"
+          test -z "$(git rev-list --min-parents=2 338d2029f16969b84becfd163c67f99740e28296.."$GITHUB_SHA")"
+          python3 .github/rpg-runtime/verify-source.py
+      - name: Build Web assets
+        run: .github/rpg-runtime/build-web.sh "$RUNNER_TEMP/rpg-runtime-output"
+      - name: Validate and describe assets
+        run: |
+          python3 .github/rpg-runtime/verify-release.py \
+            --output "$RUNNER_TEMP/rpg-runtime-output" \
+            --repository "https://github.com/$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" \
+            --commit "$GITHUB_SHA"
+      - name: Create immutable-tag release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag --target "$GITHUB_SHA" \
+            --title "KiriKiri Web $GITHUB_REF_NAME" --generate-notes \
+            "$RUNNER_TEMP/rpg-runtime-output/index.js" \
+            "$RUNNER_TEMP/rpg-runtime-output/index.wasm" \
+            "$RUNNER_TEMP/rpg-runtime-output/vlfs.js" \
+            "$RUNNER_TEMP/rpg-runtime-output/assets.zip" \
+            "$RUNNER_TEMP/rpg-runtime-output/LICENSE" \
+            "$RUNNER_TEMP/rpg-runtime-output/rpg-runtime-release.json"

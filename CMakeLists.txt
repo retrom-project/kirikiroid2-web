@@ -127,6 +127,7 @@ elseif(WEB)
         "$<$<CONFIG:Debug>:SHELL:-s ASSERTIONS=2>"
         "SHELL:-s FORCE_FILESYSTEM=1"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
+        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_krkr2_host_bookmark_is_ready','_krkr2_host_save_bookmark','_krkr2_host_load_bookmark','_krkr2_host_load_bookmark_state']"
         "SHELL:-s PTHREAD_POOL_SIZE=${KRKR2_WEB_PTHREAD_POOL_SIZE}"
         "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=1048576"
         # VirtualLazyFS: 主线程文件读经 JSPI 挂起等待 JS 异步供数
