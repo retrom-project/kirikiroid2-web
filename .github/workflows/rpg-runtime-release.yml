@@ -2,7 +2,7 @@ name: RPG Runtime Release
 
 on:
   push:
-    tags: ["rpg-runtime-g338d2029f169-r*"]
+    tags: ["retrom-core-g338d2029f169-r*"]
 
 permissions:
   contents: write
@@ -23,7 +23,7 @@ jobs:
       - name: Validate release identity
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^rpg-runtime-g338d2029f169-r[1-9][0-9]*$ ]]
+          [[ "$GITHUB_REF_NAME" =~ ^retrom-core-g338d2029f169-r[1-9][0-9]*$ ]]
           git fetch --force origin \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           test "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" = tag

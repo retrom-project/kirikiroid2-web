@@ -1,7 +1,7 @@
 # Retrom KiriKiri fork maintenance rules
 
 This fork builds the KiriKiri browser core consumed by
-`xxxsen/retrom-runtime`. It must remain independent of Retrom application APIs,
+`retrom-project/retrom-runtime`. It must remain independent of Retrom application APIs,
 databases, review workflows, credentials, and private game content.
 
 The repository's reverse-engineering and implementation rules remain in
@@ -41,9 +41,11 @@ release rules supplement rather than replace it.
   `.github/rpg-runtime/verify-release.py` with a valid candidate identity.
 - PRs to `retrom/g338d2029f169` must pass
   `.github/workflows/rpg-runtime-quality.yml`.
-- Release tags are `rpg-runtime-g338d2029f169-rN`, with optional `-rc.N` only
+- Release tags are `retrom-core-g338d2029f169-rN`, with optional `-rc.N` only
   for integration candidates. Increment `rN` for any source, build, asset, or
   adapter-contract change on this baseline.
+- Existing `rpg-runtime-*` tags are immutable historical records. Never create
+  another tag in that retired namespace.
 - Tags are annotated and immutable. The tag workflow is the only supported way
   to build and publish `index.js`, `index.wasm`, `vlfs.js`, `assets.zip`,
   `LICENSE`, and `rpg-runtime-release.json`; never publish aliases such as

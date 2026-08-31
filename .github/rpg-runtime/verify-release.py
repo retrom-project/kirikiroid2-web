@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 
-TAG = re.compile(r"^rpg-runtime-g338d2029f169-r[1-9][0-9]*(-rc\.[1-9][0-9]*)?$")
+TAG = re.compile(r"^retrom-core-g338d2029f169-r[1-9][0-9]*(-rc\.[1-9][0-9]*)?$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 

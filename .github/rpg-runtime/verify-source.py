@@ -21,7 +21,7 @@ def main() -> int:
     manifest = json.loads((ROOT / "retrom-fork.json").read_text(encoding="utf-8"))
     expected = {
         "schemaVersion": 1,
-        "forkRepository": "https://github.com/xxxsen/kirikiroid2-web",
+        "forkRepository": "https://github.com/retrom-project/kirikiroid2-web",
         "defaultBranch": "retrom/g338d2029f169",
         "upstreamMirrorBranch": "web",
         "upstreams": [
@@ -34,7 +34,7 @@ def main() -> int:
             }
         ],
         "releaseTagPattern": (
-            r"^rpg-runtime-g338d2029f169-r[1-9][0-9]*"
+            r"^retrom-core-g338d2029f169-r[1-9][0-9]*"
             r"(-rc\.[1-9][0-9]*)?$"
         ),
         "adapterAbi": "kirikiri-kag-bookmark",
