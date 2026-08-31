@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "forkRepository": "https://github.com/xxxsen/kirikiroid2-web",
+  "forkRepository": "https://github.com/retrom-project/kirikiroid2-web",
   "defaultBranch": "retrom/g338d2029f169",
   "upstreamMirrorBranch": "web",
   "upstreams": [
@@ -12,7 +12,7 @@
       "commit": "338d2029f16969b84becfd163c67f99740e28296"
     }
   ],
-  "releaseTagPattern": "^rpg-runtime-g338d2029f169-r[1-9][0-9]*(-rc\\.[1-9][0-9]*)?$",
+  "releaseTagPattern": "^retrom-core-g338d2029f169-r[1-9][0-9]*(-rc\\.[1-9][0-9]*)?$",
   "adapterAbi": "kirikiri-kag-bookmark",
   "releaseAssets": [
     "index.js",
