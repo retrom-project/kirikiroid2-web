@@ -58,12 +58,17 @@ def main() -> int:
     )):
         raise SystemExit("RPG_RUNTIME_RELEASE_BRIDGE_INVALID")
 
+    vlfs = paths["vlfs.js"].read_text(encoding="utf-8")
+    if ("content-io-v1" not in vlfs or "registerContent(path, handle, reader)" not in vlfs
+            or any(marker in vlfs for marker in ("fetch(", "XMLHttpRequest", "registerRemote(", "registerZipRemote("))):
+        raise SystemExit("RPG_RUNTIME_RELEASE_CONTENT_BRIDGE_INVALID")
+
     assets = [
         {"filename": path.name, "observedSha256": digest(path), "sizeBytes": path.stat().st_size}
         for path in paths.values()
     ]
     metadata = {
-        "adapterAbi": "kirikiri-kag-bookmark",
+        "adapterAbi": "kirikiri-content-io-v1",
         "assets": assets,
         "commit": args.commit,
         "digestPolicy": "OBSERVED_CACHE_INTEGRITY_ONLY",

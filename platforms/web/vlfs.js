@@ -20,7 +20,6 @@
     var BLOCK_SIZE = 256 * 1024;          // 块级缓存粒度
     var BLOCK_CACHE_BUDGET = 16 * 1024 * 1024; // 块缓存内存预算
     var DIRECT_READ_THRESHOLD = 512 * 1024;    // ≥ 此长度的读绕过块缓存直读源
-    var FULL_DOWNLOAD_FALLBACK_MAX_BYTES = 4 * 1024 * 1024;
     // 每个页面实例在这个根目录下使用独立的会话目录。Document 销毁与
     // FileSystemWritableFileStream 的底层关闭不是原子操作；若固定复用
     // vlfs-tmp/eN，新页面可能在旧写流收尾期间撞上
@@ -63,41 +62,57 @@
         return p.substring(p.lastIndexOf('/') + 1);
     }
 
-    async function validateRangeResponse(resp, url, pos, len, size) {
-        if (resp.status === 206) {
-            var expected = 'bytes ' + pos + '-' + (pos + len - 1) + '/' + size;
-            var actual = resp.headers.get('Content-Range');
-            var contentLength = resp.headers.get('Content-Length');
-            if (actual !== expected || contentLength !== String(len))
-                throw new Error('vlfs: range response mismatch ' + url);
-            return 'range';
-        }
-        if (resp.status !== 200)
-            throw new Error('vlfs: range fetch ' + url + ': ' + resp.status);
-        if (size > FULL_DOWNLOAD_FALLBACK_MAX_BYTES) {
-            if (resp.body) {
-                try { await resp.body.cancel(); } catch (ignored) {}
-            }
-            throw new Error('vlfs: range required for large remote ' + url);
-        }
-        var fullLength = resp.headers.get('Content-Length');
-        if (fullLength !== null && fullLength !== String(size))
-            throw new Error('vlfs: full response size mismatch ' + url);
-        return 'full';
+    var CONTENT_ABI = 'content-io-v1';
+    var CONTRACT_SHA256 = '9601f63ba9d1bad095b42b32a3d6167166535be246a87f0efac7c5b125ed27bf';
+    function contentEntry(handle, reader) {
+        if (!handle || !reader || reader.abi !== CONTENT_ABI ||
+            typeof handle.fileId !== 'string' || !handle.fileId ||
+            handle.fileId !== reader.id || handle.sizeBytes !== reader.sizeBytes ||
+            !Number.isSafeInteger(handle.sizeBytes) || handle.sizeBytes < 0 ||
+            typeof reader.readInto !== 'function' || typeof reader.tryReadInto !== 'function' ||
+            typeof reader.stream !== 'function') throw new Error('CONTENT_IO_ABI_MISMATCH');
+        return {kind: 'content', size: handle.sizeBytes, reader: reader};
     }
-
-    function exactRemoteBytes(bytes, mode, url, pos, len, size) {
-        if (mode === 'range') {
-            if (bytes.byteLength !== len)
-                throw new Error('vlfs: short range response ' + url);
-            return new Uint8Array(bytes).slice();
-        }
-        if (bytes.byteLength !== size || pos + len > size)
-            throw new Error('vlfs: full response size mismatch ' + url);
-        return new Uint8Array(bytes, pos, len).slice();
+    function rawReader(entry) {
+        if (entry.kind === 'content') return entry.reader;
+        if (entry.kind === 'zip' && entry.zipSource.kind === 'content') return entry.zipSource.reader;
+        return null;
+    }
+    function live(reader) { reader.tryReadInto(0, new Uint8Array(0)); }
+    async function readContent(reader, pos, len, signal) {
+        if (!Number.isSafeInteger(pos) || pos < 0 || !Number.isSafeInteger(len) || len < 0 ||
+            pos > reader.sizeBytes - len) throw new Error('CONTENT_IO_BOUNDS');
+        var controller = new AbortController(), timer, rejectAbort;
+        var abort = function () { controller.abort(); rejectAbort(new Error('CONTENT_IO_ABORTED')); };
+        var aborted = new Promise(function (_, reject) { rejectAbort = reject; });
+        if (signal) signal.addEventListener('abort', abort, {once:true});
+        if (signal && signal.aborted) abort();
+        timer = setTimeout(function () {controller.abort(); rejectAbort(new Error('CONTENT_IO_TIMEOUT'));}, 15000);
+        var work = (async function () {
+            var out = new Uint8Array(len), done = 0;
+            do {
+                if (controller.signal.aborted) throw new Error('CONTENT_IO_ABORTED');
+                var end = Math.min(len, done + BLOCK_SIZE), part = out.subarray(done, end);
+                var count = await reader.readInto(pos + done, part, controller.signal);
+                if (count !== part.length) throw new Error('CONTENT_IO_LENGTH_MISMATCH');
+                done = end;
+            } while (done < len);
+            return out;
+        })();
+        try { return await Promise.race([work, aborted]); }
+        finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', abort); }
+    }
+    async function hashTuple(tuple) {
+        var bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(tuple))));
+        return Array.from(bytes, function (b) {return b.toString(16).padStart(2, '0');}).join('');
     }
 
     var VLFS = {
+        contentAbi: CONTENT_ABI,
+        contractSha256: CONTRACT_SHA256,
+        derivedKey(rawObjectKey, entryPath, method, size) {
+            return hashTuple(["vlfs-derived", 1, rawObjectKey, entryPath, method, size]);
+        },
         _entries: new Map(),     // path → entry
         _lowerIndex: new Map(),  // lowercased path → canonical path（文件与目录都收录）
         _dirs: new Map(),        // dirPath → Map<lowerName, name>（孩子名，含子目录）
@@ -343,12 +358,8 @@
             return e;
         },
 
-        registerRemote(path, url, size, supportsRanges) {
-            return this._register(path, {
-                kind: supportsRanges ? 'remote' :
-                    size <= FULL_DOWNLOAD_FALLBACK_MAX_BYTES ? 'blob' : 'remote-required',
-                size: size, url: url, blob: null
-            });
+        registerContent(path, handle, reader) {
+            return this._register(path, contentEntry(handle, reader));
         },
 
         registerOverlayFile(path, data) {
@@ -357,7 +368,7 @@
 
         /*
          * 解析 ZIP 中央目录（EOCD/ZIP64），把每个条目注册为 VLFS 文件。
-         * ZIP 源可以是本地 Blob，也可以是支持 HTTP Range 的远程 URL；后者
+         * ZIP 源可以是本地 Blob，也可以是公共 Content Reader；后者
          * 只读取中央目录和实际访问的 stored 区间，不把整包常驻浏览器内存。
          * stored 条目 = 源区间切片，永不解压；deflate 条目在注册阶段**立即
          * 全部**流式解压落 OPFS（不懒解压，避免游戏中途首读卡顿），解压
@@ -370,12 +381,11 @@
                 { kind: 'blob', size: blob.size, blob: blob }, opts);
         },
 
-        async registerZipRemote(url, size, opts) {
-            return this._registerZipSource(
-                {
-                    kind: 'remote', size: size, url: url,
-                    fingerprint: opts && opts.fingerprint
-                }, opts);
+        async registerZipContent(handle, reader, rawObjectKey, opts) {
+            if (typeof rawObjectKey !== 'string' || !rawObjectKey) throw new Error('CONTENT_IO_SOURCE_INVALID');
+            var source = contentEntry(handle, reader);
+            source.rawObjectKey = rawObjectKey;
+            return this._registerZipSource(source, opts);
         },
 
         async _registerZipSource(source, opts) {
@@ -412,15 +422,15 @@
                 paths.push(fsPath);
                 if (fsPath.toLowerCase().endsWith('.xp3')) xp3Paths.push(fsPath);
             }
-            var expectedCacheEntries = deflated.map(function (item) {
+            var expectedCacheEntries = await Promise.all(deflated.map(async (item) => {
                 return {
-                    file: 'e' + item.recordIndex,
+                    file: source.rawObjectKey ? await this.derivedKey(source.rawObjectKey, item.record.name, item.record.method, item.record.uncompSize) : 'e' + item.recordIndex,
                     name: item.record.name,
                     size: item.record.uncompSize,
                     compSize: item.record.compSize,
                     crc32: item.record.crc32
                 };
-            });
+            }));
             var zipCache = await this._prepareZipCache(
                 parsed.fingerprint, expectedCacheEntries,
                 parsed.fallbackFingerprint);
@@ -545,6 +555,7 @@
         close(fd) {
             var f = this._fds.get(fd);
             if (!f) return -1;
+            if (f.pending) f.pending.abort();
             this._fds.delete(fd);
             if (f.mode === 1) {
                 f.entry.data = f.entry.data.subarray(0, f.entry.size);
@@ -565,6 +576,7 @@
             var base = whence === 1 ? f.pos : whence === 2 ? size : 0;
             var np = base + offset;
             if (np < 0) return -1;
+            if (f.pending) f.pending.abort();
             f.pos = np;
             return np;
         },
@@ -600,7 +612,19 @@
         readCached(fd, len) {
             var f = this._fds.get(fd);
             if (!f) return null;
-            var e = f.entry;
+            var e = f.entry, reader = rawReader(e);
+            if (reader) {
+                live(reader);
+                if (f.pending) return null;
+                var count = Math.min(len, Math.max(0, e.size - f.pos));
+                if (e.kind !== 'content') return null;
+                if (count > 16 * 1024 * 1024) return null;
+                var bytes = new Uint8Array(count);
+                var got = reader.tryReadInto(Math.min(f.pos, e.size), bytes);
+                if (got === null) return null;
+                if (got !== count) throw new Error('CONTENT_IO_LENGTH_MISMATCH');
+                f.pos += got; return bytes;
+            }
             if (e.size >= 0 && f.pos >= e.size) return new Uint8Array(0); // EOF 同步返回
             if (e.kind === 'overlay') {
                 var n = Math.min(len, e.size - f.pos);
@@ -627,6 +651,7 @@
             var f = this._fds.get(fd);
             if (!f) throw new Error('vlfs: bad fd ' + fd);
             var e = f.entry;
+            if (rawReader(e)) return this._readContentFd(fd, f, len);
             if (e.kind === 'fsa' && e.size < 0) {
                 e.file = await e.handle.getFile();
                 e.size = e.file.size;
@@ -648,6 +673,19 @@
             }
             f.pos += n;
             return out;
+        },
+
+        async _readContentFd(fd, f, len) {
+            if (f.pending) throw new Error('CONTENT_IO_RESOURCE_LIMIT');
+            var reader = rawReader(f.entry); live(reader);
+            var pos = f.pos, count = Math.min(len, Math.max(0, f.entry.size - pos));
+            var controller = new AbortController(); f.pending = controller;
+            try {
+                var out = await this._readSource(f.entry, Math.min(pos, f.entry.size), count, controller.signal);
+                if (controller.signal.aborted || this._fds.get(fd) !== f || f.pos !== pos)
+                    throw new Error('CONTENT_IO_ABORTED');
+                live(reader); f.pos += out.length; return out;
+            } finally { if (f.pending === controller) f.pending = null; }
         },
 
         // ---------- 内部：块缓存与数据源 ----------
@@ -683,25 +721,10 @@
             }
         },
 
-        async _readSource(e, pos, len) {
+        async _readSource(e, pos, len, signal) {
             switch (e.kind) {
+                case 'content': return readContent(e.reader, pos, len, signal);
                 case 'blob': {
-                    if (!e.blob) { // registerRemote 的非 Range 降级：懒整包拉取为 Blob
-                        if (e.size > FULL_DOWNLOAD_FALLBACK_MAX_BYTES)
-                            throw new Error('vlfs: range required for large remote ' + e.url);
-                        if (!e._fetch) {
-                            var declaredSize = e.size;
-                            e._fetch = fetch(e.url).then(async function (r) {
-                                if (!r.ok) throw new Error('fetch ' + e.url + ': ' + r.status);
-                                var blob = await r.blob();
-                                if (blob.size !== declaredSize)
-                                    throw new Error('vlfs: full response size mismatch ' + e.url);
-                                return blob;
-                            });
-                        }
-                        e.blob = await e._fetch;
-                        e.size = e.blob.size;
-                    }
                     var buf = await e.blob.slice(pos, pos + len).arrayBuffer();
                     return new Uint8Array(buf);
                 }
@@ -710,23 +733,11 @@
                     var fbuf = await e.file.slice(pos, pos + len).arrayBuffer();
                     return new Uint8Array(fbuf);
                 }
-                case 'remote': {
-                    var resp = await fetch(e.url, {
-                        headers: { 'Range': 'bytes=' + pos + '-' + (pos + len - 1) }
-                    });
-                    var responseMode = await validateRangeResponse(
-                        resp, e.url, pos, len, e.size);
-                    var rbuf = await resp.arrayBuffer();
-                    return exactRemoteBytes(
-                        rbuf, responseMode, e.url, pos, len, e.size);
-                }
-                case 'remote-required':
-                    throw new Error('vlfs: range required for large remote ' + e.url);
                 case 'zip': {
                     if (e.method === 0) {
                         if (e.dataOffset < 0) await this._resolveZipDataOffset(e);
                         return await this._readZipSourceBytes(
-                            e.zipSource, e.dataOffset + pos, len);
+                            e.zipSource, e.dataOffset + pos, len, signal);
                     }
                     await this._ensureOpfsSpill(e);
                     var obuf = await e.opfsFile.slice(pos, pos + len).arrayBuffer();
@@ -787,39 +798,22 @@
 
         // ---------- ZIP 中央目录解析 ----------
 
-        async _readZipSourceBytes(source, pos, len) {
-            if (source.kind === 'blob') {
-                var bbuf = await source.blob.slice(pos, pos + len).arrayBuffer();
-                return new Uint8Array(bbuf);
-            }
-            var resp = await fetch(source.url, {
-                headers: { 'Range': 'bytes=' + pos + '-' + (pos + len - 1) }
-            });
-            var responseMode = await validateRangeResponse(
-                resp, source.url, pos, len, source.size);
-            var rbuf = await resp.arrayBuffer();
-            return exactRemoteBytes(
-                rbuf, responseMode, source.url, pos, len, source.size);
+        async _readZipSourceBytes(source, pos, len, signal) {
+            if (source.kind === 'blob') return new Uint8Array(await source.blob.slice(pos, pos + len).arrayBuffer());
+            return readContent(source.reader, pos, len, signal);
         },
 
         async _readZipSourceStream(source, pos, len) {
-            if (source.kind === 'blob')
-                return source.blob.slice(pos, pos + len).stream();
-            var resp = await fetch(source.url, {
-                headers: { 'Range': 'bytes=' + pos + '-' + (pos + len - 1) }
-            });
-            var responseMode = await validateRangeResponse(
-                resp, source.url, pos, len, source.size);
-            if (responseMode === 'range' && resp.body) return resp.body;
-            var whole = await resp.blob();
-            if (responseMode === 'range') {
-                if (whole.size !== len)
-                    throw new Error('vlfs: short range response ' + source.url);
-                return whole.stream();
-            }
-            if (whole.size !== source.size || pos + len > source.size)
-                throw new Error('vlfs: full response size mismatch ' + source.url);
-            return whole.slice(pos, pos + len).stream();
+            if (source.kind === 'blob') return source.blob.slice(pos, pos + len).stream();
+            var controller = new AbortController();
+            var iterator = source.reader.stream(pos, len, controller.signal)[Symbol.asyncIterator]();
+            return new ReadableStream({
+                async pull(sink) {
+                    try { var next = await iterator.next(); if (next.done) sink.close(); else sink.enqueue(next.value); }
+                    catch (error) { sink.error(error); }
+                },
+                async cancel() {controller.abort(); if (iterator.return) await iterator.return();}
+            }, {highWaterMark:0});
         },
 
         async _parseZipCentralDirectory(source) {
@@ -910,8 +904,8 @@
             }
             return {
                 records: records,
-                fingerprint: source.fingerprint || fingerprint,
-                fallbackFingerprint: source.fingerprint ? fingerprint : null
+                fingerprint: source.rawObjectKey ? await hashTuple(["vlfs-derived-container", 1, source.rawObjectKey]) : fingerprint,
+                fallbackFingerprint: null
             };
         },
 

@@ -37,7 +37,7 @@ def main() -> int:
             r"^retrom-core-g338d2029f169-r[1-9][0-9]*"
             r"(-rc\.[1-9][0-9]*)?$"
         ),
-        "adapterAbi": "kirikiri-kag-bookmark",
+        "adapterAbi": "kirikiri-content-io-v1",
         "releaseAssets": [
             "index.js", "index.wasm", "vlfs.js", "assets.zip", "LICENSE",
             "rpg-runtime-release.json",
@@ -62,9 +62,8 @@ def main() -> int:
         'VCPKG_MAKE_BUILD_TRIPLET "--host=wasm32-unknown-emscripten"',
     ))
     require("platforms/web/vlfs.js", (
-        "FULL_DOWNLOAD_FALLBACK_MAX_BYTES = 4 * 1024 * 1024",
-        "range required for large remote",
-        "range response mismatch",
+        "content-io-v1", "registerContent(path, handle, reader)",
+        "9601f63ba9d1bad095b42b32a3d6167166535be246a87f0efac7c5b125ed27bf",
     ))
     return 0
 
