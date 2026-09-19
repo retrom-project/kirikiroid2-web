@@ -21,7 +21,6 @@
     var BLOCK_SIZE = 256 * 1024;          // 块级缓存粒度
     var BLOCK_CACHE_BUDGET = 16 * 1024 * 1024; // 块缓存内存预算
     var DIRECT_READ_THRESHOLD = 512 * 1024;    // ≥ 此长度的读绕过块缓存直读源
-    var FULL_DOWNLOAD_FALLBACK_MAX_BYTES = 4 * 1024 * 1024;
     // 每个页面实例在这个根目录下使用独立的会话目录。Document 销毁与
     // FileSystemWritableFileStream 的底层关闭不是原子操作；若固定复用
     // vlfs-tmp/eN，新页面可能在旧写流收尾期间撞上
@@ -64,158 +63,57 @@
         return p.substring(p.lastIndexOf('/') + 1);
     }
 
-    function cloneRequestHeaders(headers) {
-        var out = {};
-        if (!headers) return out;
-        new Headers(headers).forEach(function(value, name) {
-            out[name] = value;
-        });
-        return out;
+    var CONTENT_ABI = 'content-io-v1';
+    var CONTRACT_SHA256 = '9601f63ba9d1bad095b42b32a3d6167166535be246a87f0efac7c5b125ed27bf';
+    function contentEntry(handle, reader) {
+        if (!handle || !reader || reader.abi !== CONTENT_ABI ||
+            typeof handle.fileId !== 'string' || !handle.fileId ||
+            handle.fileId !== reader.id || handle.sizeBytes !== reader.sizeBytes ||
+            !Number.isSafeInteger(handle.sizeBytes) || handle.sizeBytes < 0 ||
+            typeof reader.readInto !== 'function' || typeof reader.tryReadInto !== 'function' ||
+            typeof reader.stream !== 'function') throw new Error('CONTENT_IO_ABI_MISMATCH');
+        return {kind: 'content', size: handle.sizeBytes, reader: reader};
     }
-
-    function normalizeWebDavRootUrl(value) {
-        var base = typeof document !== 'undefined' ? document.baseURI :
-            (typeof location !== 'undefined' ? location.href : undefined);
-        var url = new URL(value, base);
-        if (url.protocol !== 'http:' && url.protocol !== 'https:')
-            throw new Error('webdav: URL must use http or https');
-        if (url.username || url.password)
-            throw new Error('webdav: use username/password parameters, not URL userinfo');
-        url.hash = '';
-        if (!url.pathname.endsWith('/')) url.pathname += '/';
-        return url.toString();
+    function rawReader(entry) {
+        if (entry.kind === 'content') return entry.reader;
+        if (entry.kind === 'zip' && entry.zipSource.kind === 'content') return entry.zipSource.reader;
+        return null;
     }
-
-    function normalizeWebDavRelativePath(value) {
-        value = String(value || '').replace(/\\/g, '/');
-        var input = value.split('/');
-        var parts = [];
-        for (var i = 0; i < input.length; i++) {
-            var part = input[i];
-            if (!part || part === '.') continue;
-            if (part === '..') throw new Error('webdav: parent path is not allowed');
-            parts.push(part);
-        }
-        return parts.join('/');
+    function live(reader) { reader.tryReadInto(0, new Uint8Array(0)); }
+    async function readContent(reader, pos, len, signal) {
+        if (!Number.isSafeInteger(pos) || pos < 0 || !Number.isSafeInteger(len) || len < 0 ||
+            pos > reader.sizeBytes - len) throw new Error('CONTENT_IO_BOUNDS');
+        var controller = new AbortController(), timer, rejectAbort;
+        var abort = function () { controller.abort(); rejectAbort(new Error('CONTENT_IO_ABORTED')); };
+        var aborted = new Promise(function (_, reject) { rejectAbort = reject; });
+        if (signal) signal.addEventListener('abort', abort, {once:true});
+        if (signal && signal.aborted) abort();
+        timer = setTimeout(function () {controller.abort(); rejectAbort(new Error('CONTENT_IO_TIMEOUT'));}, 15000);
+        var work = (async function () {
+            var out = new Uint8Array(len), done = 0;
+            do {
+                if (controller.signal.aborted) throw new Error('CONTENT_IO_ABORTED');
+                var end = Math.min(len, done + BLOCK_SIZE), part = out.subarray(done, end);
+                var count = await reader.readInto(pos + done, part, controller.signal);
+                if (count !== part.length) throw new Error('CONTENT_IO_LENGTH_MISMATCH');
+                done = end;
+            } while (done < len);
+            return out;
+        })();
+        try { return await Promise.race([work, aborted]); }
+        finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', abort); }
     }
-
-    function webDavResourceUrl(rootUrl, relativePath, isDir) {
-        var url = new URL(normalizeWebDavRootUrl(rootUrl));
-        var relative = normalizeWebDavRelativePath(relativePath);
-        if (relative) {
-            var encoded = relative.split('/').map(function(part) {
-                return encodeURIComponent(part);
-            }).join('/');
-            url.pathname += encoded;
-        }
-        if (isDir && !url.pathname.endsWith('/')) url.pathname += '/';
-        return url.toString();
-    }
-
-    function webDavRelativePathFromHref(rootUrl, href) {
-        var root = new URL(normalizeWebDavRootUrl(rootUrl));
-        var resource = new URL(href, root);
-        var rootPath = root.pathname;
-        var resourcePath = resource.pathname;
-        if (resourcePath === rootPath.substring(0, rootPath.length - 1)) return '';
-        if (!resourcePath.startsWith(rootPath)) return null;
-        var encoded = resourcePath.substring(rootPath.length);
-        var rawParts = encoded.split('/').filter(Boolean);
-        var parts = [];
-        try {
-            for (var i = 0; i < rawParts.length; i++) {
-                var part = decodeURIComponent(rawParts[i]);
-                if (!part || part === '.' || part === '..' || part.indexOf('/') >= 0)
-                    return null;
-                parts.push(part);
-            }
-        } catch (e) {
-            return null;
-        }
-        return parts.join('/');
-    }
-
-    async function webDavPropfind(url, requestHeaders, depth) {
-        var headers = cloneRequestHeaders(requestHeaders);
-        headers.depth = depth;
-        headers['content-type'] = 'application/xml; charset=utf-8';
-        var body = '<?xml version="1.0" encoding="utf-8"?>' +
-            '<D:propfind xmlns:D="DAV:"><D:prop>' +
-            '<D:resourcetype/><D:getcontentlength/>' +
-            '</D:prop></D:propfind>';
-        var response = await fetch(url, {
-            method: 'PROPFIND', headers: headers, body: body
-        });
-        if (!response.ok)
-            throw new Error('webdav PROPFIND ' + url + ': ' + response.status);
-        return await response.text();
-    }
-
-    function parseWebDavMultiStatus(xml, rootUrl) {
-        var doc = new DOMParser().parseFromString(xml, 'application/xml');
-        if (doc.getElementsByTagName('parsererror').length)
-            throw new Error('webdav: invalid PROPFIND XML response');
-        var responses = doc.getElementsByTagNameNS('*', 'response');
-        var out = [];
-        for (var i = 0; i < responses.length; i++) {
-            var hrefNodes = responses[i].getElementsByTagNameNS('*', 'href');
-            if (!hrefNodes.length) continue;
-            var relative = webDavRelativePathFromHref(
-                rootUrl, hrefNodes[0].textContent.trim());
-            if (relative === null) continue;
-            var isDir = responses[i].getElementsByTagNameNS(
-                '*', 'collection').length > 0;
-            var size = isDir ? 0 : -1;
-            var sizeNodes = responses[i].getElementsByTagNameNS(
-                '*', 'getcontentlength');
-            for (var s = 0; s < sizeNodes.length; s++) {
-                var parsed = parseInt(sizeNodes[s].textContent.trim(), 10);
-                if (Number.isFinite(parsed) && parsed >= 0) size = parsed;
-                if (size >= 0) break;
-            }
-            out.push({
-                path: relative, isDir: isDir, size: size,
-                url: webDavResourceUrl(rootUrl, relative, isDir)
-            });
-        }
-        return out;
-    }
-
-    async function validateRangeResponse(resp, url, pos, len, size) {
-        if (resp.status === 206) {
-            var expected = 'bytes ' + pos + '-' + (pos + len - 1) + '/' + size;
-            var actual = resp.headers.get('Content-Range');
-            var contentLength = resp.headers.get('Content-Length');
-            if (actual !== expected || contentLength !== String(len))
-                throw new Error('vlfs: range response mismatch ' + url);
-            return 'range';
-        }
-        if (resp.status !== 200)
-            throw new Error('vlfs: range fetch ' + url + ': ' + resp.status);
-        if (size > FULL_DOWNLOAD_FALLBACK_MAX_BYTES) {
-            if (resp.body) {
-                try { await resp.body.cancel(); } catch (ignored) {}
-            }
-            throw new Error('vlfs: range required for large remote ' + url);
-        }
-        var fullLength = resp.headers.get('Content-Length');
-        if (fullLength !== null && fullLength !== String(size))
-            throw new Error('vlfs: full response size mismatch ' + url);
-        return 'full';
-    }
-
-    function exactRemoteBytes(bytes, mode, url, pos, len, size) {
-        if (mode === 'range') {
-            if (bytes.byteLength !== len)
-                throw new Error('vlfs: short range response ' + url);
-            return new Uint8Array(bytes).slice();
-        }
-        if (bytes.byteLength !== size || pos + len > size)
-            throw new Error('vlfs: full response size mismatch ' + url);
-        return new Uint8Array(bytes, pos, len).slice();
+    async function hashTuple(tuple) {
+        var bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(tuple))));
+        return Array.from(bytes, function (b) {return b.toString(16).padStart(2, '0');}).join('');
     }
 
     var VLFS = {
+        contentAbi: CONTENT_ABI,
+        contractSha256: CONTRACT_SHA256,
+        derivedKey(rawObjectKey, entryPath, method, size) {
+            return hashTuple(["vlfs-derived", 1, rawObjectKey, entryPath, method, size]);
+        },
         _entries: new Map(),     // path → entry
         _lowerIndex: new Map(),  // lowercased path → canonical path（文件与目录都收录）
         _dirs: new Map(),        // dirPath → Map<lowerName, name>（孩子名，含子目录）
@@ -546,171 +444,18 @@
             return e;
         },
 
-        registerRemote(path, url, size, supportsRanges, requestHeaders) {
-            return this._register(path, {
-                kind: supportsRanges ? 'remote' :
-                    size <= FULL_DOWNLOAD_FALLBACK_MAX_BYTES ? 'blob' : 'remote-required',
-                size: size, url: url, blob: null,
-                requestHeaders: cloneRequestHeaders(requestHeaders)
-            });
-        },
-
-        /*
-         * 递归枚举 WebDAV collection 并映射到 VLFS 根目录。
-         * eagerFiles=true 时先下载全部文件为 Blob；否则只注册 URL、尺寸和
-         * 认证头，首次读取时通过 Range（或一次完整 Blob 降级）供数。
-         */
-        async registerWebDav(rootUrl, requestHeaders, opts) {
-            opts = opts || {};
-            rootUrl = normalizeWebDavRootUrl(rootUrl);
-            var headers = cloneRequestHeaders(requestHeaders);
-            var knownDirs = new Set(['']);
-            var visitedDirs = new Set();
-            var queuedDirs = new Set(['']);
-            var queue = [''];
-            var files = [];
-            var seenFiles = new Set();
-
-            while (queue.length) {
-                var currentDir = queue.shift();
-                queuedDirs.delete(currentDir);
-                if (visitedDirs.has(currentDir)) continue;
-                visitedDirs.add(currentDir);
-                if (visitedDirs.size > 10000)
-                    throw new Error('webdav: too many collections');
-
-                var collectionUrl = webDavResourceUrl(rootUrl, currentDir, true);
-                var xml = await webDavPropfind(collectionUrl, headers, '1');
-                var children = parseWebDavMultiStatus(xml, rootUrl);
-                for (var i = 0; i < children.length; i++) {
-                    var child = children[i];
-                    if (child.path === currentDir) continue; // collection 自身
-                    if (child.isDir) {
-                        knownDirs.add(child.path);
-                        if (!visitedDirs.has(child.path) && !queuedDirs.has(child.path)) {
-                            queue.push(child.path);
-                            queuedDirs.add(child.path);
-                        }
-                    } else if (!seenFiles.has(child.path)) {
-                        seenFiles.add(child.path);
-                        files.push(child);
-                        if (files.length > 100000)
-                            throw new Error('webdav: too many files');
-                    }
-                }
-                if (opts.onProgress)
-                    opts.onProgress('scan', visitedDirs.size, 0, currentDir);
-            }
-
-            // VLFS 读路径需要已知尺寸；通常来自 DAV:getcontentlength，缺失时
-            // 对单个文件补 HEAD，避免把 size=-1 误判为 EOF。
-            for (var s = 0; s < files.length; s++) {
-                if (files[s].size >= 0) continue;
-                var head = await fetch(files[s].url, {
-                    method: 'HEAD', headers: cloneRequestHeaders(headers)
-                });
-                if (!head.ok)
-                    throw new Error('webdav HEAD ' + files[s].path + ': ' + head.status);
-                files[s].size = parseInt(
-                    head.headers.get('Content-Length') || '-1', 10);
-                if (files[s].size < 0 || !Number.isFinite(files[s].size))
-                    throw new Error('webdav: missing size for ' + files[s].path);
-            }
-
-            for (var dirPath of knownDirs)
-                this._ensureDirNode(dirPath ? '/' + dirPath : '/');
-
-            var paths = [], xp3Paths = [];
-            for (var f = 0; f < files.length; f++) {
-                var item = files[f];
-                var fsPath = normPath('/' + item.path);
-                if (opts.eagerFiles) {
-                    if (opts.onProgress)
-                        opts.onProgress('download', f, files.length, fsPath);
-                    var resp = await fetch(item.url, {
-                        headers: cloneRequestHeaders(headers)
-                    });
-                    if (!resp.ok)
-                        throw new Error('webdav GET ' + item.path + ': ' + resp.status);
-                    this.registerBlobFile(fsPath, await resp.blob());
-                } else {
-                    // 先乐观尝试 Range；若服务器返回 200，_readSource 会把
-                    // 完整响应缓存成 Blob，保证每个文件至多完整下载一次。
-                    this.registerRemote(fsPath, item.url, item.size, true, headers);
-                }
-                paths.push(fsPath);
-                if (fsPath.toLowerCase().endsWith('.xp3')) xp3Paths.push(fsPath);
-            }
-            if (opts.onProgress && opts.eagerFiles && files.length)
-                opts.onProgress('download', files.length, files.length, '');
-
-            return {
-                rootUrl: rootUrl, requestHeaders: headers,
-                knownDirs: knownDirs, paths: paths, xp3Paths: xp3Paths
-            };
-        },
-
-        // 将一个 VLFS 路径回写到 WebDAV；缺失的父 collection 逐级 MKCOL。
-        async writeWebDavFile(rootUrl, requestHeaders, path, data, knownDirs) {
-            rootUrl = normalizeWebDavRootUrl(rootUrl);
-            var headers = cloneRequestHeaders(requestHeaders);
-            var relative = normalizeWebDavRelativePath(path);
-            if (!relative) throw new Error('webdav: empty write path');
-            var parts = relative.split('/');
-            parts.pop();
-            var current = '';
-            knownDirs = knownDirs || new Set(['']);
-
-            for (var i = 0; i < parts.length; i++) {
-                current = current ? current + '/' + parts[i] : parts[i];
-                if (knownDirs.has(current)) continue;
-                var dirUrl = webDavResourceUrl(rootUrl, current, true);
-                var mkcol = await fetch(dirUrl, {
-                    method: 'MKCOL', headers: cloneRequestHeaders(headers)
-                });
-                if (!mkcol.ok && mkcol.status !== 405)
-                    throw new Error('webdav MKCOL ' + current + ': ' + mkcol.status);
-                knownDirs.add(current);
-            }
-
-            var putHeaders = cloneRequestHeaders(headers);
-            putHeaders['content-type'] = 'application/octet-stream';
-            var fileUrl = webDavResourceUrl(rootUrl, relative, false);
-            var put = await fetch(fileUrl, {
-                method: 'PUT', headers: putHeaders, body: data
-            });
-            if (!put.ok)
-                throw new Error('webdav PUT ' + relative + ': ' + put.status);
-            return { status: put.status, etag: put.headers.get('ETag') || '' };
-        },
-
-        async deleteWebDavFile(rootUrl, requestHeaders, path) {
-            rootUrl = normalizeWebDavRootUrl(rootUrl);
-            var relative = normalizeWebDavRelativePath(path);
-            if (!relative) throw new Error('webdav: empty delete path');
-            var response = await fetch(
-                webDavResourceUrl(rootUrl, relative, false), {
-                    method: 'DELETE',
-                    headers: cloneRequestHeaders(requestHeaders)
-                });
-            if (!response.ok && response.status !== 404)
-                throw new Error('webdav DELETE ' + relative + ': ' + response.status);
-            return response.status;
-        },
-
-        registerOverlayFile(path, data) {
-            return this._register(path, { kind: 'overlay', size: data.length, data: data, cap: data.length });
+        registerContent(path, handle, reader) {
+            return this._register(path, contentEntry(handle, reader));
         },
 
         /*
          * 解析 ZIP 中央目录（EOCD/ZIP64），把每个条目注册为 VLFS 文件。
-         * ZIP 源可以是本地 Blob，也可以是支持 HTTP Range 的远程 URL。
-         * 普通 stored 条目从源区间切片；deflate 条目通过
-         * DecompressionStream→OPFS 流式解压。远程 eager 指定
-         * opts.persistentCache 时，stored/deflate 会全部按挂载后原始路径
-         * 写入持久 OPFS，使下次启动可以脱离 ZIP 本体直接恢复。
-         * opts.eagerDeflate 默认为 true；设为 false 时 deflate 在首读时
-         * 才解压到页面会话 OPFS。
+         * ZIP 源可以是本地 Blob，也可以是公共 Content Reader；后者
+         * 只读取中央目录和实际访问的 stored 区间，不把整包常驻浏览器内存。
+         * stored 条目保留源区间读取；deflate 默认流式解压到 OPFS，
+         * opts.eagerDeflate=false 可延迟到首读。公共 Reader 的派生缓存
+         * 以 rawObjectKey 定位，只缓存 deflate，不提前物化 stored 条目。
+         * opts.onProgress(done, total, path) 报告解压进度。
          * 返回 { paths, xp3Paths }。
          */
         async registerZipBlob(blob, opts) {
@@ -718,12 +463,11 @@
                 { kind: 'blob', size: blob.size, blob: blob }, opts);
         },
 
-        async registerZipRemote(url, size, opts) {
-            return this._registerZipSource(
-                {
-                    kind: 'remote', size: size, url: url,
-                    etag: opts && opts.etag
-                }, opts);
+        async registerZipContent(handle, reader, rawObjectKey, opts) {
+            if (typeof rawObjectKey !== 'string' || !rawObjectKey) throw new Error('CONTENT_IO_SOURCE_INVALID');
+            var source = contentEntry(handle, reader);
+            source.rawObjectKey = rawObjectKey;
+            return this._registerZipSource(source, opts);
         },
 
         async _writeZipEntryToCache(cacheDir, item) {
@@ -795,8 +539,16 @@
                 paths.push(fsPath);
                 if (fsPath.toLowerCase().endsWith('.xp3')) xp3Paths.push(fsPath);
             }
+            var cacheItems = source.rawObjectKey ? await Promise.all(deflated.map(async (item) => ({
+                ...item,
+                path: '/' + await this.derivedKey(source.rawObjectKey,
+                    item.record.name, item.record.method, item.record.uncompSize)
+            }))) : items;
+            var cacheIdentity = opts.persistentCache || (source.rawObjectKey ? {
+                resourceKey: source.rawObjectKey, etag: source.rawObjectKey
+            } : null);
             if (eagerDeflate) {
-                var expectedCacheEntries = items.map(function (item) {
+                var expectedCacheEntries = cacheItems.map(function (item) {
                     return {
                         path: item.path,
                         size: item.record.uncompSize,
@@ -804,16 +556,16 @@
                     };
                 });
                 var zipCache = cacheable ? await this._prepareZipCache(
-                    opts.persistentCache, expectedCacheEntries,
+                    cacheIdentity, expectedCacheEntries,
                     parsed.fingerprint) : null;
                 if (zipCache && !zipCache.complete) {
                     try {
-                        for (var k = 0; k < items.length; k++) {
+                        for (var k = 0; k < cacheItems.length; k++) {
                             if (opts.onProgress)
-                                opts.onProgress(k, items.length, items[k].path);
-                            zipCache.files.set(items[k].path,
+                                opts.onProgress(k, items.length, cacheItems[k].path);
+                            zipCache.files.set(cacheItems[k].path,
                                 await this._writeZipEntryToCache(
-                                    zipCache.dir, items[k]));
+                                    zipCache.dir, cacheItems[k]));
                         }
                         await this._commitZipCache(zipCache);
                     } catch (cacheError) {
@@ -824,9 +576,9 @@
                     }
                 }
                 if (zipCache && zipCache.complete) {
-                    for (var m = 0; m < items.length; m++) {
+                    for (var m = 0; m < cacheItems.length; m++) {
                         this._adoptZipCacheFile(
-                            items[m].entry, zipCache.files.get(items[m].path));
+                            cacheItems[m].entry, zipCache.files.get(cacheItems[m].path));
                     }
                     if (opts.onProgress && items.length)
                         opts.onProgress(items.length, items.length, '');
@@ -947,6 +699,7 @@
         close(fd) {
             var f = this._fds.get(fd);
             if (!f) return -1;
+            if (f.pending) f.pending.abort();
             this._fds.delete(fd);
             if (f.mode === 1) {
                 f.entry.data = f.entry.data.subarray(0, f.entry.size);
@@ -967,6 +720,7 @@
             var base = whence === 1 ? f.pos : whence === 2 ? size : 0;
             var np = base + offset;
             if (np < 0) return -1;
+            if (f.pending) f.pending.abort();
             f.pos = np;
             return np;
         },
@@ -1002,7 +756,19 @@
         readCached(fd, len) {
             var f = this._fds.get(fd);
             if (!f) return null;
-            var e = f.entry;
+            var e = f.entry, reader = rawReader(e);
+            if (reader) {
+                live(reader);
+                if (f.pending) return null;
+                var count = Math.min(len, Math.max(0, e.size - f.pos));
+                if (e.kind !== 'content') return null;
+                if (count > 16 * 1024 * 1024) return null;
+                var bytes = new Uint8Array(count);
+                var got = reader.tryReadInto(Math.min(f.pos, e.size), bytes);
+                if (got === null) return null;
+                if (got !== count) throw new Error('CONTENT_IO_LENGTH_MISMATCH');
+                f.pos += got; return bytes;
+            }
             if (e.size >= 0 && f.pos >= e.size) return new Uint8Array(0); // EOF 同步返回
             if (e.kind === 'overlay') {
                 var n = Math.min(len, e.size - f.pos);
@@ -1029,6 +795,7 @@
             var f = this._fds.get(fd);
             if (!f) throw new Error('vlfs: bad fd ' + fd);
             var e = f.entry;
+            if (rawReader(e)) return this._readContentFd(fd, f, len);
             if (e.kind === 'fsa' && e.size < 0) {
                 e.file = await e.handle.getFile();
                 e.size = e.file.size;
@@ -1050,6 +817,19 @@
             }
             f.pos += n;
             return out;
+        },
+
+        async _readContentFd(fd, f, len) {
+            if (f.pending) throw new Error('CONTENT_IO_RESOURCE_LIMIT');
+            var reader = rawReader(f.entry); live(reader);
+            var pos = f.pos, count = Math.min(len, Math.max(0, f.entry.size - pos));
+            var controller = new AbortController(); f.pending = controller;
+            try {
+                var out = await this._readSource(f.entry, Math.min(pos, f.entry.size), count, controller.signal);
+                if (controller.signal.aborted || this._fds.get(fd) !== f || f.pos !== pos)
+                    throw new Error('CONTENT_IO_ABORTED');
+                live(reader); f.pos += out.length; return out;
+            } finally { if (f.pending === controller) f.pending = null; }
         },
 
         // ---------- 内部：块缓存与数据源 ----------
@@ -1085,27 +865,10 @@
             }
         },
 
-        async _readSource(e, pos, len) {
+        async _readSource(e, pos, len, signal) {
             switch (e.kind) {
+                case 'content': return readContent(e.reader, pos, len, signal);
                 case 'blob': {
-                    if (!e.blob) { // registerRemote 的非 Range 降级：懒整包拉取为 Blob
-                        if (e.size > FULL_DOWNLOAD_FALLBACK_MAX_BYTES)
-                            throw new Error('vlfs: range required for large remote ' + e.url);
-                        if (!e._fetch) {
-                            var declaredSize = e.size;
-                            e._fetch = fetch(e.url, {
-                                headers: cloneRequestHeaders(e.requestHeaders)
-                            }).then(async function (r) {
-                                if (!r.ok) throw new Error('fetch ' + e.url + ': ' + r.status);
-                                var blob = await r.blob();
-                                if (blob.size !== declaredSize)
-                                    throw new Error('vlfs: full response size mismatch ' + e.url);
-                                return blob;
-                            });
-                        }
-                        e.blob = await e._fetch;
-                        e.size = e.blob.size;
-                    }
                     var buf = await e.blob.slice(pos, pos + len).arrayBuffer();
                     return new Uint8Array(buf);
                 }
@@ -1114,33 +877,11 @@
                     var fbuf = await e.file.slice(pos, pos + len).arrayBuffer();
                     return new Uint8Array(fbuf);
                 }
-                case 'remote': {
-                    var rangeHeaders = cloneRequestHeaders(e.requestHeaders);
-                    rangeHeaders.Range = 'bytes=' + pos + '-' + (pos + len - 1);
-                    var resp = await fetch(e.url, {
-                        headers: rangeHeaders
-                    });
-                    var responseMode = await validateRangeResponse(
-                        resp, e.url, pos, len, e.size);
-                    if (responseMode === 'full') {
-                        var whole = await resp.blob();
-                        if (whole.size !== e.size)
-                            throw new Error('vlfs: full response size mismatch ' + e.url);
-                        e.blob = whole;
-                        e.kind = 'blob';
-                        return new Uint8Array(await whole.slice(pos, pos + len).arrayBuffer());
-                    }
-                    var rbuf = await resp.arrayBuffer();
-                    return exactRemoteBytes(
-                        rbuf, responseMode, e.url, pos, len, e.size);
-                }
-                case 'remote-required':
-                    throw new Error('vlfs: range required for large remote ' + e.url);
                 case 'zip': {
                     if (e.method === 0) {
                         if (e.dataOffset < 0) await this._resolveZipDataOffset(e);
                         return await this._readZipSourceBytes(
-                            e.zipSource, e.dataOffset + pos, len);
+                            e.zipSource, e.dataOffset + pos, len, signal);
                     }
                     await this._ensureOpfsSpill(e);
                     var obuf = await e.opfsFile.slice(pos, pos + len).arrayBuffer();
@@ -1195,53 +936,22 @@
 
         // ---------- ZIP 中央目录解析 ----------
 
-        _validateZipRangeResponse(source, response, pos, len) {
-            if (source.etag) {
-                var responseETag = (response.headers.get('ETag') || '').trim();
-                if (responseETag !== source.etag)
-                    throw new Error('vlfs: ZIP changed while reading ranges');
-            }
-            var contentRange = response.headers.get('Content-Range') || '';
-            var match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(contentRange);
-            if (!match || Number(match[1]) !== pos ||
-                Number(match[2]) < pos + len - 1 ||
-                Number(match[3]) !== source.size)
-                throw new Error('vlfs: invalid ZIP Content-Range ' + contentRange);
-        },
-
-        async _readZipSourceBytes(source, pos, len) {
-            if (source.kind === 'blob') {
-                var bbuf = await source.blob.slice(pos, pos + len).arrayBuffer();
-                return new Uint8Array(bbuf);
-            }
-            var resp = await fetch(source.url, {
-                headers: { 'Range': 'bytes=' + pos + '-' + (pos + len - 1) },
-                cache: 'no-store'
-            });
-            // registerZipRemote 只用于真正的 Range 挂载。若服务器忽略 Range
-            // 返回 200，交给 shell 回退成单个完整 Blob，避免后续每次条目读取
-            // 都重复下载整个 ZIP。
-            if (resp.status !== 206)
-                throw new Error('zip range fetch ' + source.url + ': ' + resp.status);
-            this._validateZipRangeResponse(source, resp, pos, len);
-            var rbuf = await resp.arrayBuffer();
-            if (rbuf.byteLength < len)
-                throw new Error('short zip range: ' + rbuf.byteLength + ' < ' + len);
-            return new Uint8Array(rbuf, 0, len).slice();
+        async _readZipSourceBytes(source, pos, len, signal) {
+            if (source.kind === 'blob') return new Uint8Array(await source.blob.slice(pos, pos + len).arrayBuffer());
+            return readContent(source.reader, pos, len, signal);
         },
 
         async _readZipSourceStream(source, pos, len) {
-            if (source.kind === 'blob')
-                return source.blob.slice(pos, pos + len).stream();
-            var resp = await fetch(source.url, {
-                headers: { 'Range': 'bytes=' + pos + '-' + (pos + len - 1) },
-                cache: 'no-store'
-            });
-            if (resp.status !== 206)
-                throw new Error('zip range fetch ' + source.url + ': ' + resp.status);
-            this._validateZipRangeResponse(source, resp, pos, len);
-            if (resp.body) return resp.body;
-            return (await resp.blob()).stream();
+            if (source.kind === 'blob') return source.blob.slice(pos, pos + len).stream();
+            var controller = new AbortController();
+            var iterator = source.reader.stream(pos, len, controller.signal)[Symbol.asyncIterator]();
+            return new ReadableStream({
+                async pull(sink) {
+                    try { var next = await iterator.next(); if (next.done) sink.close(); else sink.enqueue(next.value); }
+                    catch (error) { sink.error(error); }
+                },
+                async cancel() {controller.abort(); if (iterator.return) await iterator.return();}
+            }, {highWaterMark:0});
         },
 
         async _parseZipCentralDirectory(source) {
@@ -1333,7 +1043,8 @@
             }
             return {
                 records: records,
-                fingerprint: fingerprint
+                fingerprint: source.rawObjectKey ? await hashTuple(["vlfs-derived-container", 1, source.rawObjectKey]) : fingerprint,
+                fallbackFingerprint: null
             };
         },
 
