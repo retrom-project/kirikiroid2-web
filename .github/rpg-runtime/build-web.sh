@@ -41,8 +41,14 @@ prepare_vcpkg
 source "$emsdk_root/emsdk_env.sh" >/dev/null
 export VCPKG_ROOT="$vcpkg_root"
 
+# Match upstream's SDK port preparation before vcpkg configures Cocos. Building
+# these lazily under -fwasm-exceptions hits the SDK's boolean-setting conversion.
+embuilder build libpng libpng-mt libpng-legacysjlj libpng-mt-legacysjlj
+embuilder build freetype freetype-legacysjlj
+embuilder build harfbuzz harfbuzz-mt
+embuilder build sdl2 sdl2-mt
+embuilder build sdl2_ttf sdl2_ttf-mt
 (cd "$root" && cmake --preset "Web Release Config")
-embuilder build sdl2 sdl2_ttf sdl2-mt sdl2_ttf-mt
 cmake --build "$root/out/web/release" --parallel "${KIRIKIRI_BUILD_JOBS:-2}"
 
 for asset in index.js index.wasm vlfs.js assets.zip; do
