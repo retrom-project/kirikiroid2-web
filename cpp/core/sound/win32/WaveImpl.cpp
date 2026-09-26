@@ -26,6 +26,7 @@
 #include <thread>
 #include <vector>
 #include <emscripten.h>
+#include <emscripten/eventloop.h>
 #include <emscripten/proxying.h>
 #include <emscripten/threading.h>
 #endif
@@ -1556,8 +1557,17 @@ tTJSCriticalSection TVPWaveSoundBufferVectorCS;
    buffer, and also manages timing for label events. The technique
    used in this algorithm is similar to Timer claass implementation.
 */
-class tTVPWaveSoundBufferThread : public tTVPThread {
+class tTVPWaveSoundBufferThread
+#ifndef __EMSCRIPTEN__
+    : public tTVPThread
+#endif
+{
+#ifdef __EMSCRIPTEN__
+    int Timer = 0;
+    void Schedule(tjs_int delay);
+#else
     tTVPThreadEvent Event;
+#endif
 
     // HWND UtilWindow; // utility window to notify the pending events
     // occur
@@ -1571,7 +1581,11 @@ class tTVPWaveSoundBufferThread : public tTVPThread {
 public:
     tTVPWaveSoundBufferThread();
 
+#ifdef __EMSCRIPTEN__
+    ~tTVPWaveSoundBufferThread();
+#else
     ~tTVPWaveSoundBufferThread() override;
+#endif
 
 private:
     // void __fastcall UtilWndProc(Messages::TMessage &Msg);
@@ -1581,7 +1595,11 @@ public:
     void ReschedulePendingLabelEvent(tjs_int tick);
 
 protected:
+#ifdef __EMSCRIPTEN__
+    void Execute();
+#else
     void Execute() override;
+#endif
 
 public:
     void Start();
@@ -1599,33 +1617,64 @@ void TVPUnlockSoundMixer() {
 
 //---------------------------------------------------------------------------
 tTVPWaveSoundBufferThread::tTVPWaveSoundBufferThread() :
+#ifndef __EMSCRIPTEN__
     tTVPThread(true),
+#endif
     EventQueue(this, &tTVPWaveSoundBufferThread::UtilWndProc) {
     EventQueue.Allocate();
     PendingLabelEventExists = false;
     NextLabelEventTick = 0;
     LastFilledTick = 0;
     WndProcToBeCalled = false;
+#ifndef __EMSCRIPTEN__
     SetPriority(ttpHighest);
     Resume();
+#endif
 }
 
 //---------------------------------------------------------------------------
 tTVPWaveSoundBufferThread::~tTVPWaveSoundBufferThread() {
+#ifdef __EMSCRIPTEN__
+    if(Timer)
+        emscripten_clear_timeout(Timer);
+    EventQueue.Clear();
+#else
     SetPriority(ttpNormal);
     Resume();
     Event.Set();
     WaitFor();
+#endif
     EventQueue.Deallocate();
+#ifndef __EMSCRIPTEN__
     Terminate();
+#endif
 }
+
+#ifdef __EMSCRIPTEN__
+void tTVPWaveSoundBufferThread::Schedule(tjs_int delay) {
+    // OpenAL belongs to the browser main thread. A playback worker holding
+    // VectorCS/BufferCS can otherwise wait for a proxy while that same main
+    // thread waits for its lock in the asynchronous play continuation.
+    if(Timer)
+        emscripten_clear_timeout(Timer);
+    Timer = emscripten_set_timeout([](void *opaque) {
+        auto *self = static_cast<tTVPWaveSoundBufferThread *>(opaque);
+        self->Timer = 0;
+        self->Execute();
+    }, delay, this);
+}
+#endif
 
 //---------------------------------------------------------------------------
 // void __fastcall
 // tTVPWaveSoundBufferThread::UtilWndProc(Messages::TMessage &Msg)
 void tTVPWaveSoundBufferThread::UtilWndProc(NativeEvent &ev) {
     // Window procedure of UtilWindow
-    if(ev.Message == TVP_EV_WAVE_SND_BUF_THREAD && !GetTerminated()) {
+    if(ev.Message == TVP_EV_WAVE_SND_BUF_THREAD
+#ifndef __EMSCRIPTEN__
+       && !GetTerminated()
+#endif
+    ) {
         // pending events occur
         tTJSCriticalSectionHolder holder(
             TVPWaveSoundBufferVectorCS); // protect the object
@@ -1679,7 +1728,12 @@ void tTVPWaveSoundBufferThread::ReschedulePendingLabelEvent(tjs_int tick) {
 #define TVP_WSB_THREAD_SLEEP_TIME 60
 
 void tTVPWaveSoundBufferThread::Execute() {
+#ifdef __EMSCRIPTEN__
+    // One bounded tick; decoding remains on the existing background pipeline.
+    {
+#else
     while(!GetTerminated()) {
+#endif
         // thread loop for playing thread
         DWORD time = TVPGetRoughTickCount32();
         TVPPushEnvironNoise(&time, sizeof(time));
@@ -1742,9 +1796,17 @@ void tTVPWaveSoundBufferThread::Execute() {
                 if(sleep_time < 1)
                     sleep_time = 1;
             }
+#ifdef __EMSCRIPTEN__
+            Schedule(sleep_time);
+#else
             Event.WaitFor(sleep_time);
+#endif
         } else {
+#ifdef __EMSCRIPTEN__
+            Schedule(1);
+#else
             Event.WaitFor(1);
+#endif
         }
     }
 }
@@ -1752,8 +1814,12 @@ void tTVPWaveSoundBufferThread::Execute() {
 //---------------------------------------------------------------------------
 void tTVPWaveSoundBufferThread::Start() {
     TVPPrimaryBufferPlayingByProgram = true;
+#ifdef __EMSCRIPTEN__
+    Schedule(0);
+#else
     Event.Set();
     Resume();
+#endif
 }
 
 //---------------------------------------------------------------------------
@@ -2914,6 +2980,13 @@ bool tTJSNI_WaveSoundBuffer::FillBuffer(bool firstwrite, bool allowpause) {
     if(Thread->GetRunning() && bufferremain < TVP_WSB_ACCESS_FREQ)
         Thread->SetPriority(ttpNormal); // buffer remains under 1 sec
 
+#ifdef __EMSCRIPTEN__
+    // A timer/mailbox callback cannot suspend for a cold file read. Yield on
+    // underrun and let the decoder supply L2 data before submitting it to AL.
+    if(bufferremain == 0 && (firstwrite || !L2BufferEnded))
+        return true;
+#endif
+
     // check buffer playing position
     tjs_int writepos;
 #if 0
@@ -2965,6 +3038,10 @@ bool tTJSNI_WaveSoundBuffer::FillBuffer(bool firstwrite, bool allowpause) {
                     LoopManager->SetPosition(0);
                 return true;
             }
+#ifdef __EMSCRIPTEN__
+            if(bufferremain == 0)
+                return true; // wait for the final queued AL buffers to drain
+#endif
         }
 #if 0
         else
@@ -3027,8 +3104,10 @@ bool tTJSNI_WaveSoundBuffer::FillBuffer(bool firstwrite, bool allowpause) {
         // with no locking operations
         FillDSBuffer(writepos, *segment);
     } else {
+#ifndef __EMSCRIPTEN__
         PrepareToReadL2Buffer(
             false); // complete decoding before reading from L2
+#endif
 
         {
             tTJSCriticalSectionHolder l2holder(L2BufferCS);
@@ -3242,6 +3321,10 @@ std::shared_ptr<tTJSNI_WaveSoundBuffer::tAsyncPlayContext>
 tTJSNI_WaveSoundBuffer::StartPlayAsync() {
     if(!Decoder)
         return nullptr;
+
+    // Only this startup continuation may consume the initial four L2 units.
+    // Re-enable periodic playback after all four have reached OpenAL.
+    ThreadCallbackEnabled = false;
 
     TVPEnsurePrimaryBufferPlay();
     TVPEnsureWaveSoundBufferWorking();
