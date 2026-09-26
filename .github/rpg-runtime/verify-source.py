@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = "338d2029f16969b84becfd163c67f99740e28296"
+BASELINE = "13dda190f8370d02b6cf59286a088529b355658c"
 
 
 def require(path: str, markers: tuple[str, ...]) -> None:
@@ -22,7 +22,7 @@ def main() -> int:
     expected = {
         "schemaVersion": 1,
         "forkRepository": "https://github.com/retrom-project/kirikiroid2-web",
-        "defaultBranch": "retrom/g338d2029f169",
+        "defaultBranch": "retrom/g13dda190f837",
         "upstreamMirrorBranch": "web",
         "upstreams": [
             {
@@ -34,7 +34,7 @@ def main() -> int:
             }
         ],
         "releaseTagPattern": (
-            r"^retrom-core-g338d2029f169-r[1-9][0-9]*"
+            r"^retrom-core-g13dda190f837-r[1-9][0-9]*"
             r"(-rc\.[1-9][0-9]*)?$"
         ),
         "adapterAbi": "kirikiri-content-io-v1",

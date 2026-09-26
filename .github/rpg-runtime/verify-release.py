@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 
-TAG = re.compile(r"^retrom-core-g338d2029f169-r[1-9][0-9]*(-rc\.[1-9][0-9]*)?$")
+TAG = re.compile(r"^retrom-core-g13dda190f837-r[1-9][0-9]*(-rc\.[1-9][0-9]*)?$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -74,7 +74,7 @@ def main() -> int:
         "digestPolicy": "OBSERVED_CACHE_INTEGRITY_ONLY",
         "repository": args.repository,
         "schemaVersion": 1,
-        "sourceCommits": {"engine": "338d2029f16969b84becfd163c67f99740e28296"},
+        "sourceCommits": {"engine": "13dda190f8370d02b6cf59286a088529b355658c"},
         "tag": args.tag,
     }
     (args.output / "rpg-runtime-release.json").write_text(

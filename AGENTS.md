@@ -11,7 +11,7 @@ release rules supplement rather than replace it.
 ## Repository identity
 
 - `web` is an unmodified, fast-forward-only mirror of `upstream/web`.
-- `retrom/g338d2029f169` is the only active Retrom maintenance baseline and the
+- `retrom/g13dda190f837` is the only active Retrom maintenance baseline and the
   repository default branch. Retrom changes and release tags originate there,
   never from `web`.
 - `upstream` must point to `https://github.com/fenghengzhi/kirikiroid2-web.git`.
@@ -24,7 +24,7 @@ release rules supplement rather than replace it.
 ## Branches and commits
 
 - Use short-lived `fix/*`, `feat/*`, `build/*`, or `sync/upstream-<baseline>`
-  branches created from `retrom/g338d2029f169`.
+  branches created from `retrom/g13dda190f837`.
 - Branch names use lowercase ASCII and hyphens. Do not create `temp`, `clean`,
   `final`, `runtime-clean`, parallel maintenance branches, or branches named
   after an agent or user.
@@ -39,9 +39,9 @@ release rules supplement rather than replace it.
 - Changes that affect Web output must also run
   `.github/rpg-runtime/build-web.sh <empty-output-directory>` followed by
   `.github/rpg-runtime/verify-release.py` with a valid candidate identity.
-- PRs to `retrom/g338d2029f169` must pass
+- PRs to `retrom/g13dda190f837` must pass
   `.github/workflows/rpg-runtime-quality.yml`.
-- Release tags are `retrom-core-g338d2029f169-rN`, with optional `-rc.N` only
+- Release tags are `retrom-core-g13dda190f837-rN`, with optional `-rc.N` only
   for integration candidates. Increment `rN` for any source, build, asset, or
   adapter-contract change on this baseline.
 - Existing `rpg-runtime-*` tags are immutable historical records. Never create

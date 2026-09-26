@@ -158,6 +158,9 @@ function makeZip(entries) {
 function loadVLFS(storageRoot) {
     const context = vm.createContext({
         Blob,
+        AbortController,
+        setTimeout,
+        clearTimeout,
         DecompressionStream,
         Headers,
         ReadableStream,
@@ -237,21 +240,47 @@ assert.deepEqual(
 assert.equal(await readText(second, "/data.xp3"), "stored-xp3");
 assert.equal(await readText(second, "/system/config.tjs"), "deflated-config");
 assert.equal(await second.restoreZipCache(resourceKey, '"archive-v2"'), null);
-assert.doesNotThrow(() => second._validateZipRangeResponse(
-    {etag, size: 100},
-    {headers: new Headers({
-        ETag: etag,
-        "Content-Range": "bytes 0-9/100",
-    })},
-    0,
-    10));
-assert.throws(() => second._validateZipRangeResponse(
-    {etag, size: 100},
-    {headers: new Headers({
-        ETag: '"archive-v2"',
-        "Content-Range": "bytes 0-9/100",
-    })},
-    0,
-    10), /ZIP changed/);
+// Retrom supplies immutable ZIP bytes through Content I/O. The transport owns
+// Range/ETag validation; this boundary must retain lazy stored reads and reuse
+// only the derived deflate cache in a fresh instance.
+const contentRoot = new MemoryDirectoryHandle("content-root");
+const archiveBytes = new Uint8Array(await archive.arrayBuffer());
+let streams = 0;
+let reads = 0;
+const reader = {
+    abi: "content-io-v1", id: "zip-content", sizeBytes: archiveBytes.length,
+    tryReadInto() { return null; },
+    async readInto(offset, out) {
+        ++reads;
+        out.set(archiveBytes.subarray(offset, offset + out.length));
+        return out.length;
+    },
+    async *stream(offset, length) {
+        ++streams;
+        yield archiveBytes.subarray(offset, offset + length);
+    },
+};
+const handle = {fileId: reader.id, sizeBytes: reader.sizeBytes};
+const contentFirst = loadVLFS(contentRoot);
+await contentFirst.init();
+await contentFirst.registerZipContent(handle, reader, "immutable-zip-v1");
+assert.equal(streams, 1);
+assert.equal(contentFirst._entries.get("/data.xp3").kind, "zip");
+assert.equal(await readText(contentFirst, "/system/config.tjs"), "deflated-config");
+const contentSecond = loadVLFS(contentRoot);
+await contentSecond.init();
+await contentSecond.registerZipContent(handle, reader, "immutable-zip-v1");
+assert.equal(streams, 1, "fresh instance must reuse the deflate cache");
+assert.equal(contentSecond._entries.get("/data.xp3").kind, "zip");
+assert.equal(await readText(contentSecond, "/system/config.tjs"), "deflated-config");
+const metadataReads = reads;
+assert.equal(await readText(contentSecond, "/data.xp3"), "stored-xp3");
+assert.ok(reads > metadataReads, "stored data must still use Content I/O");
+await assert.rejects(contentSecond.registerZipContent(
+    {...handle, sizeBytes: handle.sizeBytes + 1}, reader, "invalid"), /CONTENT_IO_ABI_MISMATCH/);
+const changedContent = loadVLFS(contentRoot);
+await changedContent.init();
+await changedContent.registerZipContent(handle, reader, "immutable-zip-v2");
+assert.equal(streams, 2, "a different immutable identity must not reuse stale derived bytes");
 
-console.log("VLFS complete OPFS ZIP cache verified");
+console.log("VLFS complete OPFS and Content I/O derived ZIP caches verified");

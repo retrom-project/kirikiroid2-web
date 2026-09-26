@@ -545,7 +545,7 @@
                     item.record.name, item.record.method, item.record.uncompSize)
             }))) : items;
             var cacheIdentity = opts.persistentCache || (source.rawObjectKey ? {
-                resourceKey: source.rawObjectKey, etag: source.rawObjectKey
+                resourceKey: source.rawObjectKey, etag: ''
             } : null);
             if (eagerDeflate) {
                 var expectedCacheEntries = cacheItems.map(function (item) {
@@ -562,7 +562,7 @@
                     try {
                         for (var k = 0; k < cacheItems.length; k++) {
                             if (opts.onProgress)
-                                opts.onProgress(k, items.length, cacheItems[k].path);
+                                opts.onProgress(k, cacheItems.length, cacheItems[k].path);
                             zipCache.files.set(cacheItems[k].path,
                                 await this._writeZipEntryToCache(
                                     zipCache.dir, cacheItems[k]));

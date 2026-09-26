@@ -6,17 +6,17 @@ output=${1:?output directory is required}
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
 toolchain_root=${KIRIKIRI_RUNTIME_TOOLCHAIN_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/kirikiroid2-runtime}
-emsdk_root=${EMSDK:-$toolchain_root/emsdk-4.0.23}
+emsdk_root=${EMSDK:-$toolchain_root/emsdk-6.0.9}
 vcpkg_root=${VCPKG_ROOT:-$toolchain_root/vcpkg-b1e15efef675}
 
 prepare_emsdk() {
   if [[ ! -x "$emsdk_root/emsdk" ]]; then
     rm -rf -- "$emsdk_root"
-    git clone --quiet --depth 1 --branch 4.0.23 https://github.com/emscripten-core/emsdk.git "$emsdk_root"
+    git clone --quiet --depth 1 --branch 6.0.9 https://github.com/emscripten-core/emsdk.git "$emsdk_root"
   fi
   if [[ ! -f "$emsdk_root/upstream/emscripten/emcc.py" ]]; then
-    "$emsdk_root/emsdk" install 4.0.23
-    "$emsdk_root/emsdk" activate 4.0.23
+    "$emsdk_root/emsdk" install 6.0.9
+    "$emsdk_root/emsdk" activate 6.0.9
   fi
 }
 

@@ -7,6 +7,6 @@ python3 "$root/.github/rpg-runtime/candidate_descriptor.py" prepare "$output"
 commit=$(git -C "$root" rev-parse HEAD)
 python3 "$root/.github/rpg-runtime/verify-release.py" --output "$output" \
   --repository https://github.com/retrom-project/kirikiroid2-web \
-  --tag retrom-core-g338d2029f169-r999999 --commit "$commit"
+  --tag retrom-core-g13dda190f837-r999999 --commit "$commit"
 rm "$output/rpg-runtime-release.json"
 python3 "$root/.github/rpg-runtime/candidate_descriptor.py" finalize "$output" --core-id kirikiri2
