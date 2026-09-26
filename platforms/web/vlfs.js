@@ -448,6 +448,10 @@
             return this._register(path, contentEntry(handle, reader));
         },
 
+        registerOverlayFile(path, data) {
+            return this._register(path, { kind: 'overlay', size: data.length, data: data, cap: data.length });
+        },
+
         /*
          * 解析 ZIP 中央目录（EOCD/ZIP64），把每个条目注册为 VLFS 文件。
          * ZIP 源可以是本地 Blob，也可以是公共 Content Reader；后者
