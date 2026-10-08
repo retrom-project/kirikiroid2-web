@@ -75,15 +75,23 @@ void traceBookmarkState(const char *stage) noexcept {
             }
             trace += "}";
         };
-        fields("kag", kag, {"currentStorage", "currentLabel", "inStable", "isFirstProcess", "currentPage", "currentNum", "inSleep", "inTransition", "inFlipInterval", "flipStartFlag", "transShowing", "visible", "inShow", "usingExtraConductor"});
+        fields("kag", kag, {"currentStorage", "currentLabel", "inStable", "isFirstProcess", "currentPage", "currentNum", "inSleep", "inTransition", "inFlipInterval", "flipStartFlag", "transShowing", "visible", "inShow", "usingExtraConductor", "_clickWaiting", "isWaitPeriodEvent", "holdPeriodEventQueue"});
+        auto can_restore = read(kag, "canRestore");
+        if(auto *method = object(can_restore)) {
+            tTJSVariant result;
+            method->FuncCall(0, nullptr, nullptr, &result, 0, nullptr, kag);
+            trace += "canRestore:" + ttstr(result).AsStdString();
+        }
         for(auto name : {"conductor", "mainConductor", "extraConductor"}) {
             auto conductor = read(kag, name);
             fields(name, object(conductor), {"status", "curStorage", "curLine", "enabled", "interval", "timer", "oneshot", "oneShot", "tickCount"});
+            auto timer = read(object(conductor), "timer");
+            fields("timer", object(timer), {"enabled", "interval"});
         }
         auto layer = [&](const char *name, const tTJSVariant &value) {
             fields(name, object(value), {"visible", "opacity", "hasImage", "imageWidth", "imageHeight", "width", "height", "left", "top", "type", "parent", "absolute", "imageLeft", "imageTop", "drawPlane"});
         };
-        for(auto name : {"_primaryLayer", "sysbase", "uibase", "btLayer", "_transLayer", "current", "snapshotLayer"})
+        for(auto name : {"_primaryLayer", "sysbase", "uibase", "btLayer", "_transLayer", "current", "snapshotLayer", "_sysCoverLayer"})
             layer(name, read(kag, name));
         for(auto name : {"fore", "back"}) {
             auto page = read(kag, name);
