@@ -28,6 +28,7 @@ addToLibrary({
     if (!promiseState) {
       promiseState = {
         pending: null,
+        stopping: false,
         waiting: null,
         target: null,
         wrapper: null,
@@ -35,6 +36,17 @@ addToLibrary({
       MainLoop.__krkr2PromiseAwareSchedulerState = promiseState;
       globalThis.__krkr2MainLoopPromiseState = promiseState;
     }
+    // Web host lifetime boundary: pause prevents another frame, but a tick
+    // suspended in a content read still owns the Wasm stack and VLFS globals.
+    // The host cancels its readers after this synchronous pause, then awaits
+    // this drain before releasing those globals. Only the resulting content
+    // cancellation is expected; unrelated failures remain scheduler errors.
+    Module['krkr2StopMainLoop'] = () => {
+      promiseState.stopping = true;
+      MainLoop.pause();
+      var cancelBookmark = () => Module['_krkr2_host_cancel_bookmark_load']();
+      return Promise.resolve(promiseState.pending).then(cancelBookmark, cancelBookmark);
+    };
     // Browser-only frame-pump policy. Keep RAF as the sole scheduler, but use
     // its display-synchronised timestamp to limit how often the WASM main loop
     // runs. The target defaults to 15 FPS and can be overridden with
@@ -123,7 +135,9 @@ addToLibrary({
         }, (error) => {
           if (promiseState.pending === pending) promiseState.pending = null;
           if (promiseState.waiting === pending) promiseState.waiting = null;
-          handleException(error);
+          if (!promiseState.stopping || error?.code !== 'CONTENT_IO_ABORTED') {
+            handleException(error);
+          }
         });
       };
 

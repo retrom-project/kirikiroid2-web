@@ -16,6 +16,13 @@ let handledError = null;
 const mainLoop = {
   func: null,
   scheduler: null,
+  pause() {
+    this.scheduler = null;
+  },
+};
+let bookmarkCancels = 0;
+const module = {
+  _krkr2_host_cancel_bookmark_load() { ++bookmarkCancels; },
 };
 
 const context = vm.createContext({
@@ -23,6 +30,7 @@ const context = vm.createContext({
     library = value;
   },
   MainLoop: mainLoop,
+  Module: module,
   setMainLoop(iterFunc) {
     mainLoop.func = iterFunc;
     mainLoop.scheduler = () => {
@@ -120,3 +128,88 @@ assert.equal(
     "a rejected tick must not schedule another frame");
 
 console.log("JSPI main-loop Promise scheduler tests passed");
+
+// The host must be able to stop scheduling synchronously, then cancel content
+// reads while awaiting the suspended tick before removing Module/VLFS.
+for (const rejectTick of [false, true]) {
+  let settleTick;
+  tickImplementation = () => new Promise((resolve, reject) => {
+    settleTick = () => rejectTick ? reject(new Error("content aborted")) : resolve();
+  });
+  context.__tvpRafT += 17;
+  const pendingTick = mainLoop.func();
+  mainLoop.scheduler = () => { ++scheduledFrames; };
+  mainLoop.scheduler();
+  const framesAtStop = scheduledFrames;
+  let stopped = false;
+  const cancelsAtStop = bookmarkCancels;
+  const stopping = module.krkr2StopMainLoop().then(() => { stopped = true; });
+  assert.equal(mainLoop.scheduler, null, "stop must pause before returning");
+  await Promise.resolve();
+  assert.equal(stopped, false, "stop must retain a suspended JSPI tick");
+  assert.equal(bookmarkCancels, cancelsAtStop,
+      "observer cancellation must not reenter the suspended TJS stack");
+  settleTick();
+  await pendingTick.catch(() => {});
+  await stopping;
+  assert.equal(stopped, true, "both successful and rejected reads must drain");
+  assert.equal(bookmarkCancels, cancelsAtStop + 1,
+      "observer cancellation must run after either drain outcome");
+  assert.equal(scheduledFrames, framesAtStop, "stop must not schedule another frame");
+}
+await module.krkr2StopMainLoop();
+console.log("JSPI host stop/drain tests passed");
+
+// A content cancellation is expected only after this host began stopping.
+// Ordinary failures and cancellations already delivered while running remain
+// failures, including when exit follows immediately afterward.
+for (const order of ["running", "stop-before-abort", "abort-before-stop", "stop-before-error"]) {
+  let rejectTick;
+  const tick = new Promise((_resolve, reject) => { rejectTick = reject; });
+  const errors = [];
+  const loop = {func: null, scheduler: null, pause() { this.scheduler = null; }};
+  const instance = {_krkr2_host_cancel_bookmark_load() {}};
+  let api;
+  const sandbox = vm.createContext({
+    addToLibrary(value) { api = value; },
+    MainLoop: loop, Module: instance,
+    setMainLoop(fn) { loop.func = fn; loop.scheduler = () => {}; },
+    handleException(error) { errors.push(error); },
+    wasmTable: {get() { return () => {}; }},
+    WebAssembly: {promising() { return () => tick; }},
+    URLSearchParams, performance: {now: () => 0}, location: {search: ""},
+    requestAnimationFrame() {}, Promise, Map, Number, Object, document: {},
+  });
+  vm.runInContext(source, sandbox);
+  api.emscripten_set_main_loop_arg(1, 0, 0, false);
+  loop.func();
+  loop.scheduler();
+  const error = order === "stop-before-error" ? new Error("real read failure") :
+      Object.assign(new Error("CONTENT_IO_ABORTED"), {code: "CONTENT_IO_ABORTED"});
+  let stopping;
+  if (order.startsWith("stop-before")) stopping = instance.krkr2StopMainLoop();
+  rejectTick(error);
+  await tick.catch(() => {});
+  await Promise.resolve();
+  if (order === "abort-before-stop") stopping = instance.krkr2StopMainLoop();
+  if (stopping) await stopping;
+  assert.deepEqual(errors, order === "stop-before-abort" ? [] : [error], order);
+}
+console.log("JSPI cancellation ownership tests passed");
+
+// Execute the actual EM_JS body used by the native bookmark boundary.
+const bookmarkSource = fs.readFileSync(path.resolve(testDir,
+    "../../cpp/core/environ/web/HostBookmarkBridge.cpp"), "utf8");
+const idleBody = bookmarkSource.match(/EM_JS\(int, krkr2_host_main_loop_is_idle, \(\), \{([\s\S]*?)\n\}\);/);
+assert.ok(idleBody, "native idle boundary must be present");
+const idleQuery = "(function() {" + idleBody[1] + "})()";
+for (const [name, state, expected] of [
+  ["unregistered", undefined, 0],
+  ["initializing", {pending: Promise.resolve(), stopping: false}, 0],
+  ["idle", {pending: null, stopping: false}, 1],
+  ["stopping", {pending: null, stopping: true}, 0],
+]) {
+  assert.equal(vm.runInNewContext(idleQuery,
+      {__krkr2MainLoopPromiseState: state}), expected, name);
+}
+console.log("Native bookmark idle boundary tests passed");
