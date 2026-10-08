@@ -43,21 +43,27 @@ bool findKagMethod(const tjs_char *name, tTJSVariant &kag_value,
                method_value.AsObjectNoAddRef()) == TJS_S_TRUE;
 }
 
-bool kagReachedSavePoint(const tTJSVariant &kag_value) {
+bool kagIsStable(const tTJSVariant &kag_value) {
     iTJSDispatch2 *kag = kag_value.Type() == tvtObject
                              ? kag_value.AsObjectNoAddRef()
                              : nullptr;
-    tTJSVariant current_label;
     tTJSVariant in_stable;
-    if(!kag || kag->PropGet(0, TJS_W("currentLabel"), nullptr,
+    return kag && kag->PropGet(0, TJS_W("inStable"), nullptr, &in_stable,
+                              kag) == TJS_S_OK &&
+           in_stable.operator bool();
+}
+
+bool kagReachedSavePoint(const tTJSVariant &kag_value) {
+    if(!kagIsStable(kag_value)) return false;
+    iTJSDispatch2 *kag = kag_value.AsObjectNoAddRef();
+    tTJSVariant current_label;
+    if(kag->PropGet(0, TJS_W("currentLabel"), nullptr,
                             &current_label, kag) != TJS_S_OK ||
-       current_label.Type() != tvtString ||
-       kag->PropGet(0, TJS_W("inStable"), nullptr, &in_stable, kag) !=
-           TJS_S_OK) {
+       current_label.Type() != tvtString) {
         return false;
     }
     auto *label = current_label.AsStringNoAddRef();
-    return label && label->GetLength() > 0 && in_stable.operator bool();
+    return label && label->GetLength() > 0;
 }
 
 int callKagBookmark(const tjs_char *name, tjs_int32 slot) noexcept {
@@ -69,6 +75,9 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot) noexcept {
             return kag_value.Type() == tvtObject ? kMethodUnavailable
                                                  : kKagUnavailable;
         }
+        // A load is queued on the Cocos thread. Recheck the native stable
+        // state when it actually runs, after the host's readiness query.
+        if(!kagIsStable(kag_value)) return kBookmarkRejected;
         iTJSDispatch2 *kag = kag_value.AsObjectNoAddRef();
         iTJSDispatch2 *method = method_value.AsObjectNoAddRef();
         tTJSVariant result;
@@ -112,12 +121,14 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
 
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
     // Web host boundary: startup may wait for user input before reaching a
-    // savepoint. Restoring only needs the game's loader to be initialized; it
-    // must not require input or manufacture a savepoint in the game script.
+    // savepoint. Wait for KAG's native stable state, which includes startup
+    // click-wait before a save label exists. A callable loader alone appears
+    // during initialization, when subsequent script work can overwrite a load.
     try {
         tTJSVariant kag_value;
         tTJSVariant load_method;
-        return findKagMethod(TJS_W("loadBookMark"), kag_value, load_method)
+        return findKagMethod(TJS_W("loadBookMark"), kag_value, load_method) &&
+                       kagIsStable(kag_value)
                    ? 1
                    : 0;
     } catch(...) {

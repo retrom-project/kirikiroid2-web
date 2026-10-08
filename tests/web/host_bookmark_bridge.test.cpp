@@ -90,13 +90,16 @@ int main() {
     kag.properties[L"loadBookMark"] = tTJSVariant(&load);
     assert(krkr2_host_load_bookmark_is_ready() == 0);
     load.function = true;
-    // A game's startup input wait has a callable loader before a savepoint.
-    assert(krkr2_host_load_bookmark_is_ready() == 1);
+    // A loader can exist while game initialization is still running.
+    assert(krkr2_host_load_bookmark_is_ready() == 0);
     assert(krkr2_host_bookmark_is_ready() == 0);
     kag.properties[L"saveBookMark"] = tTJSVariant(&save);
     save.function = true;
     kag.properties[L"currentLabel"] = tTJSVariant(L"");
     kag.properties[L"inStable"] = tTJSVariant(0);
+    assert(krkr2_host_load_bookmark_is_ready() == 0);
+    // Native click-wait is stable even before a scenario save label exists.
+    kag.properties[L"inStable"] = tTJSVariant(1);
     assert(krkr2_host_load_bookmark_is_ready() == 1);
     assert(krkr2_host_bookmark_is_ready() == 0);
     // Load once through the real queued bridge, without advancing startup.
@@ -108,9 +111,18 @@ int main() {
     assert(krkr2_host_load_bookmark_state() == 2);
     assert(krkr2_host_bookmark_is_ready() == 0);
     kag.properties[L"currentLabel"] = tTJSVariant(L"*chapter");
+    kag.properties[L"inStable"] = tTJSVariant(0);
     assert(krkr2_host_bookmark_is_ready() == 0);
     kag.properties[L"inStable"] = tTJSVariant(1);
     assert(krkr2_host_bookmark_is_ready() == 1);
+    // A queued host operation must not call into a game that resumed running
+    // after the readiness query but before the Cocos scheduler executes it.
+    load_state.store(kLoadIdle);
+    assert(krkr2_host_load_bookmark(1999) == 0);
+    kag.properties[L"inStable"] = tTJSVariant(0);
+    cocos2d::Director::getInstance()->scheduler.queued();
+    assert(krkr2_host_load_bookmark_state() == kBookmarkRejected);
+    assert(load.calls == 1);
     global.throws = true;
     assert(krkr2_host_load_bookmark_is_ready() == 0);
 }
