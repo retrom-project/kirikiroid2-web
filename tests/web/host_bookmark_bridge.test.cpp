@@ -32,7 +32,7 @@ struct tTJSVariant {
     int Type() const { return type; }
     iTJSDispatch2 *AsObjectNoAddRef() const { return object; }
     const TestString *AsStringNoAddRef() const { return &string; }
-    explicit operator bool() const { return integer != 0; }
+    explicit operator bool() const { return type == tvtObject ? object != nullptr : integer != 0; }
 };
 struct iTJSDispatch2 {
     std::map<std::wstring, tTJSVariant> properties;
@@ -101,7 +101,20 @@ int main() {
     kag.properties[L"currentLabel"] = tTJSVariant(L"");
     kag.properties[L"inStable"] = tTJSVariant(0);
     assert(krkr2_host_load_bookmark_is_ready() == 0);
-    // Native click-wait is stable even before a scenario save label exists.
+    // KAG starts with inStable=true while scripts/layers are still being built.
+    kag.properties[L"inStable"] = tTJSVariant(1);
+    assert(krkr2_host_load_bookmark_is_ready() == 0);
+    kag.properties[L"isFirstProcess"] = tTJSVariant(1);
+    assert(krkr2_host_load_bookmark_is_ready() == 0);
+    // The first process clears isFirstProcess and calls notifyRun before the
+    // startup scenario runs. Only its later stable click-wait is loadable.
+    kag.properties[L"isFirstProcess"] = tTJSVariant(0);
+    kag.properties.erase(L"inStable");
+    assert(krkr2_host_load_bookmark_is_ready() == 0);
+    kag.properties[L"inStable"] = tTJSVariant(&kag);
+    assert(krkr2_host_load_bookmark_is_ready() == 0);
+    kag.properties[L"inStable"] = tTJSVariant(0);
+    assert(krkr2_host_load_bookmark_is_ready() == 0);
     kag.properties[L"inStable"] = tTJSVariant(1);
     assert(krkr2_host_load_bookmark_is_ready() == 1);
     assert(krkr2_host_bookmark_is_ready() == 0);

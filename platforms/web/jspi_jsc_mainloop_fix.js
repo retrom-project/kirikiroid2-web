@@ -28,6 +28,7 @@ addToLibrary({
     if (!promiseState) {
       promiseState = {
         pending: null,
+        stopping: false,
         waiting: null,
         target: null,
         wrapper: null,
@@ -38,9 +39,10 @@ addToLibrary({
     // Web host lifetime boundary: pause prevents another frame, but a tick
     // suspended in a content read still owns the Wasm stack and VLFS globals.
     // The host cancels its readers after this synchronous pause, then awaits
-    // this drain before releasing those globals. A rejected tick is already
-    // reported by the scheduler below; draining must also finish on rejection.
+    // this drain before releasing those globals. Only the resulting content
+    // cancellation is expected; unrelated failures remain scheduler errors.
     Module['krkr2StopMainLoop'] = () => {
+      promiseState.stopping = true;
       MainLoop.pause();
       return Promise.resolve(promiseState.pending).then(() => {}, () => {});
     };
@@ -132,7 +134,9 @@ addToLibrary({
         }, (error) => {
           if (promiseState.pending === pending) promiseState.pending = null;
           if (promiseState.waiting === pending) promiseState.waiting = null;
-          handleException(error);
+          if (!promiseState.stopping || error?.code !== 'CONTENT_IO_ABORTED') {
+            handleException(error);
+          }
         });
       };
 

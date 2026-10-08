@@ -49,10 +49,14 @@ bool kagIsStable(const tTJSVariant &kag_value) {
     iTJSDispatch2 *kag = kag_value.Type() == tvtObject
                              ? kag_value.AsObjectNoAddRef()
                              : nullptr;
+    tTJSVariant first_process;
     tTJSVariant in_stable;
-    return kag && kag->PropGet(0, TJS_W("inStable"), nullptr, &in_stable,
-                              kag) == TJS_S_OK &&
-           in_stable.operator bool();
+    return kag &&
+           kag->PropGet(0, TJS_W("isFirstProcess"), nullptr, &first_process,
+                        kag) == TJS_S_OK &&
+           first_process.Type() == tvtInteger && !first_process.operator bool() &&
+           kag->PropGet(0, TJS_W("inStable"), nullptr, &in_stable, kag) == TJS_S_OK &&
+           in_stable.Type() == tvtInteger && in_stable.operator bool();
 }
 
 bool kagReachedSavePoint(const tTJSVariant &kag_value) {
@@ -127,9 +131,10 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
 
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
     // Web host boundary: startup may wait for user input before reaching a
-    // savepoint. Wait for KAG's native stable state, which includes startup
-    // click-wait before a save label exists. A callable loader alone appears
-    // during initialization, when subsequent script work can overwrite a load.
+    // savepoint. KAG initializes inStable=true before construction finishes.
+    // Its first process clears isFirstProcess and notifies run before executing
+    // the scenario. Require the subsequent stable state, which can be a startup
+    // click-wait without a save label, so initialization cannot overwrite load.
     try {
         tTJSVariant kag_value;
         tTJSVariant load_method;

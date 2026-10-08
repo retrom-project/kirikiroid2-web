@@ -151,3 +151,40 @@ for (const rejectTick of [false, true]) {
 }
 await module.krkr2StopMainLoop();
 console.log("JSPI host stop/drain tests passed");
+
+// A content cancellation is expected only after this host began stopping.
+// Ordinary failures and cancellations already delivered while running remain
+// failures, including when exit follows immediately afterward.
+for (const order of ["running", "stop-before-abort", "abort-before-stop", "stop-before-error"]) {
+  let rejectTick;
+  const tick = new Promise((_resolve, reject) => { rejectTick = reject; });
+  const errors = [];
+  const loop = {func: null, scheduler: null, pause() { this.scheduler = null; }};
+  const instance = {};
+  let api;
+  const sandbox = vm.createContext({
+    addToLibrary(value) { api = value; },
+    MainLoop: loop, Module: instance,
+    setMainLoop(fn) { loop.func = fn; loop.scheduler = () => {}; },
+    handleException(error) { errors.push(error); },
+    wasmTable: {get() { return () => {}; }},
+    WebAssembly: {promising() { return () => tick; }},
+    URLSearchParams, performance: {now: () => 0}, location: {search: ""},
+    requestAnimationFrame() {}, Promise, Map, Number, Object, document: {},
+  });
+  vm.runInContext(source, sandbox);
+  api.emscripten_set_main_loop_arg(1, 0, 0, false);
+  loop.func();
+  loop.scheduler();
+  const error = order === "stop-before-error" ? new Error("real read failure") :
+      Object.assign(new Error("CONTENT_IO_ABORTED"), {code: "CONTENT_IO_ABORTED"});
+  let stopping;
+  if (order.startsWith("stop-before")) stopping = instance.krkr2StopMainLoop();
+  rejectTick(error);
+  await tick.catch(() => {});
+  await Promise.resolve();
+  if (order === "abort-before-stop") stopping = instance.krkr2StopMainLoop();
+  if (stopping) await stopping;
+  assert.deepEqual(errors, order === "stop-before-abort" ? [] : [error], order);
+}
+console.log("JSPI cancellation ownership tests passed");
