@@ -9,6 +9,8 @@
 #include "tjsCommHead.h"
 
 #include <atomic>
+#include <cstdio>
+#include <exception>
 #include <emscripten.h>
 
 namespace {
@@ -89,7 +91,11 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot) noexcept {
         }
         return result.operator bool() ? kBookmarkSucceeded
                                       : kBookmarkRejected;
+    } catch(const std::exception &error) {
+        std::fprintf(stderr, "[bookmark] script exception: %s\n", error.what());
+        return kScriptException;
     } catch(...) {
+        std::fprintf(stderr, "[bookmark] unknown script exception\n");
         return kScriptException;
     }
 }

@@ -38,6 +38,7 @@ struct iTJSDispatch2 {
     std::map<std::wstring, tTJSVariant> properties;
     bool function = false;
     bool throws = false;
+    int callException = 0;
     int calls = 0;
     int slot = -1;
     int PropGet(int, const wchar_t *name, void *, tTJSVariant *result,
@@ -53,6 +54,8 @@ struct iTJSDispatch2 {
     }
     int FuncCall(int, void *, void *, tTJSVariant *result, int count,
                  tTJSVariant **arguments, iTJSDispatch2 *) {
+        if(callException == 1) throw std::runtime_error("bookmark test failure");
+        if(callException == 2) throw 7;
         assert(count == 1);
         ++calls;
         slot = arguments[0]->integer;
@@ -123,6 +126,11 @@ int main() {
     cocos2d::Director::getInstance()->scheduler.queued();
     assert(krkr2_host_load_bookmark_state() == kBookmarkRejected);
     assert(load.calls == 1);
+    kag.properties[L"inStable"] = tTJSVariant(1);
+    save.callException = 1;
+    assert(krkr2_host_save_bookmark(1999) == kScriptException);
+    save.callException = 2;
+    assert(krkr2_host_save_bookmark(1999) == kScriptException);
     global.throws = true;
     assert(krkr2_host_load_bookmark_is_ready() == 0);
 }
