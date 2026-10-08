@@ -1,7 +1,6 @@
-// Host-boundary test: fake only the TJS/Cocos dependencies, compile the actual
+// Host-boundary test: fake only the TJS/event dependencies, compile the actual
 // Web bridge below. No reconstructed engine implementation or game is mocked.
 #include <cassert>
-#include <functional>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -9,6 +8,10 @@
 
 using tjs_char = wchar_t;
 using tjs_int32 = int;
+using tjs_uint32 = unsigned;
+using tjs_int = int;
+using tjs_error = int;
+using ttstr = std::wstring;
 #define TJS_W(value) L##value
 #define EMSCRIPTEN_KEEPALIVE
 constexpr int TJS_S_OK = 0;
@@ -52,7 +55,7 @@ struct iTJSDispatch2 {
     int IsInstanceOf(int, void *, void *, const wchar_t *, iTJSDispatch2 *) {
         return function ? TJS_S_TRUE : TJS_S_FALSE;
     }
-    int FuncCall(int, void *, void *, tTJSVariant *result, int count,
+    virtual int FuncCall(tjs_uint32, const tjs_char *, tjs_uint32 *, tTJSVariant *result, int count,
                  tTJSVariant **arguments, iTJSDispatch2 *) {
         if(callException == 1) throw std::runtime_error("bookmark test failure");
         if(callException == 2) throw 7;
@@ -65,18 +68,37 @@ struct iTJSDispatch2 {
 };
 iTJSDispatch2 *testGlobal = nullptr;
 iTJSDispatch2 *TVPGetScriptDispatch() { return testGlobal; }
-namespace cocos2d {
-struct Scheduler {
-    std::function<void()> queued;
-    void performFunctionInCocosThread(std::function<void()> callback) {
-        queued = std::move(callback);
-    }
+int liveDispatches = 0;
+struct tTJSDispatch : iTJSDispatch2 {
+    int references = 1;
+    tTJSDispatch() { ++liveDispatches; }
+    virtual ~tTJSDispatch() { --liveDispatches; }
+    void AddRef() { ++references; }
+    void Release() { if(--references == 0) delete this; }
+    virtual tjs_error IsValid(tjs_uint32, const tjs_char *, tjs_uint32 *, iTJSDispatch2 *) { return TJS_S_TRUE; }
 };
-struct Director {
-    Scheduler scheduler;
-    static Director *getInstance() { static Director instance; return &instance; }
-    Scheduler *getScheduler() { return &scheduler; }
-};
+constexpr tjs_uint32 TVP_EPT_POST = 0;
+constexpr tjs_uint32 TVP_EPT_IDLE = 0x40;
+tTJSDispatch *postedEvent = nullptr;
+void TVPPostEvent(tTJSDispatch *source, tTJSDispatch *target, ttstr &, tjs_uint32,
+                  tjs_uint32 flags, tjs_uint32 count, tTJSVariant *) {
+    assert(flags == (TVP_EPT_POST | TVP_EPT_IDLE));
+    assert(count == 0 && source == target);
+    source->AddRef();
+    target->AddRef();
+    postedEvent = target;
+}
+void discardPostedEvent() {
+    assert(postedEvent->references == 2);
+    postedEvent->Release();
+    postedEvent->Release();
+    postedEvent = nullptr;
+    assert(liveDispatches == 0);
+}
+void deliverPostedEvent() {
+    assert(postedEvent->IsValid(0, nullptr, nullptr, postedEvent) == TJS_S_TRUE);
+    postedEvent->FuncCall(0, nullptr, nullptr, nullptr, 0, nullptr, postedEvent);
+    discardPostedEvent();
 }
 
 bool TVPStartupSuccess = false;
@@ -124,13 +146,19 @@ int main() {
     assert(krkr2_host_load_bookmark(1999) == 0);
     assert(krkr2_host_load_bookmark_state() == 1);
     assert(load.calls == 0);
-    // The callback executes within its own Cocos tick: do not reject it merely
+    // The callback executes in the native event delivery tick: do not reject it merely
     // because that tick is active or the startup scene is not a savepoint.
     testLoopPending = true;
-    cocos2d::Director::getInstance()->scheduler.queued();
+    deliverPostedEvent();
     assert(load.calls == 1 && load.slot == 1999);
     assert(krkr2_host_load_bookmark_state() == 2);
     testLoopPending = false;
+    // Destroying a queued event retains no bridge object and must not invoke
+    // the script loader. This is the native queue's teardown ownership path.
+    load_state.store(kLoadIdle);
+    assert(krkr2_host_load_bookmark(1999) == kBookmarkSucceeded);
+    discardPostedEvent();
+    assert(load.calls == 1);
     kag.properties[L"inStable"] = tTJSVariant(1);
     assert(krkr2_host_bookmark_is_ready() == 0);
     kag.properties[L"currentLabel"] = tTJSVariant(L"*chapter");

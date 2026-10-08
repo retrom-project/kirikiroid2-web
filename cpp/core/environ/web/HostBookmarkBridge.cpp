@@ -4,8 +4,8 @@
 // exposes the KAG bookmark API already provided by a loaded game so a browser
 // host can request a semantic checkpoint without snapshotting Wasm memory.
 #include "ScriptMgnIntf.h"
-#include "base/CCDirector.h"
-#include "base/CCScheduler.h"
+#include "EventIntf.h"
+#include "tjsObject.h"
 #include "tjsCommHead.h"
 
 #include <atomic>
@@ -88,8 +88,8 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept
                                                  : kKagUnavailable;
         }
         // Capturing needs a script savepoint. Loading can replace a startup
-        // wait that never notifies KAG stable; it was queued only after the
-        // initialization tick returned, and now runs within its own tick.
+        // wait that never notifies KAG stable; it was posted only after the
+        // initialization tick returned, and now runs as a native idle event.
         if(capture && !kagReachedSavePoint(kag_value)) return kBookmarkRejected;
         iTJSDispatch2 *kag = kag_value.AsObjectNoAddRef();
         iTJSDispatch2 *method = method_value.AsObjectNoAddRef();
@@ -111,6 +111,27 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept
     }
 }
 
+class LoadBookmarkEvent final : public tTJSDispatch {
+    tjs_int32 slot_;
+
+public:
+    explicit LoadBookmarkEvent(tjs_int32 slot) : slot_(slot) {}
+
+    tjs_error IsValid(tjs_uint32, const tjs_char *, tjs_uint32 *,
+                      iTJSDispatch2 *) override {
+        return TJS_S_TRUE;
+    }
+
+    tjs_error FuncCall(tjs_uint32, const tjs_char *, tjs_uint32 *,
+                       tTJSVariant *, tjs_int, tTJSVariant **,
+                       iTJSDispatch2 *) override {
+        std::fprintf(stderr, "[bookmark] native idle event dispatch\n");
+        const int result = callKagBookmark(TJS_W("loadBookMark"), slot_, false);
+        load_state.store(result == kBookmarkSucceeded ? kLoadSucceeded : result);
+        return TJS_S_OK;
+    }
+};
+
 int scheduleKagLoad(tjs_int32 slot) noexcept {
     if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle())
         return kBookmarkRejected;
@@ -118,20 +139,19 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
     if(!load_state.compare_exchange_strong(expected, kLoadPending)) {
         return kLoadAlreadyRequested;
     }
+    LoadBookmarkEvent *event = nullptr;
     try {
-        auto *director = cocos2d::Director::getInstance();
-        auto *scheduler = director ? director->getScheduler() : nullptr;
-        if(!scheduler) {
-            load_state.store(kScriptUnavailable);
-            return kScriptUnavailable;
-        }
-        scheduler->performFunctionInCocosThread([slot] {
-            const int result = callKagBookmark(TJS_W("loadBookMark"), slot, false);
-            load_state.store(result == kBookmarkSucceeded ? kLoadSucceeded
-                                                          : result);
-        });
+        event = new LoadBookmarkEvent(slot);
+        ttstr name(TJS_W("loadBookMark"));
+        // Loading is a script event. Let startup input/normal events finish
+        // before the host load, instead of calling into TJS from the Cocos
+        // scheduler before the engine's own event delivery phase.
+        TVPPostEvent(event, event, name, 0, TVP_EPT_POST | TVP_EPT_IDLE,
+                     0, nullptr);
+        event->Release();
         return kBookmarkSucceeded;
     } catch(...) {
+        if(event) event->Release();
         load_state.store(kScriptException);
         return kScriptException;
     }
