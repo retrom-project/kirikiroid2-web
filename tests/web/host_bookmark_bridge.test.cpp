@@ -79,10 +79,18 @@ struct Director {
 };
 }
 
+bool TVPStartupSuccess = false;
+bool testLoopRegistered = false;
+bool testLoopPending = false;
+bool testLoopStopping = false;
+#define EM_JS(type, name, args, ...) type name args { \
+    return testLoopRegistered && !testLoopPending && !testLoopStopping; \
+}
 #include "cpp/core/environ/web/HostBookmarkBridge.cpp"
 
 int main() {
     assert(krkr2_host_load_bookmark_is_ready() == 0);
+    testLoopRegistered = true;
     iTJSDispatch2 global, kag, load, save;
     testGlobal = &global;
     assert(krkr2_host_load_bookmark_is_ready() == 0);
@@ -93,53 +101,54 @@ int main() {
     kag.properties[L"loadBookMark"] = tTJSVariant(&load);
     assert(krkr2_host_load_bookmark_is_ready() == 0);
     load.function = true;
-    // A loader can exist while game initialization is still running.
     assert(krkr2_host_load_bookmark_is_ready() == 0);
-    assert(krkr2_host_bookmark_is_ready() == 0);
+    TVPStartupSuccess = true;
     kag.properties[L"saveBookMark"] = tTJSVariant(&save);
     save.function = true;
     kag.properties[L"currentLabel"] = tTJSVariant(L"");
-    kag.properties[L"inStable"] = tTJSVariant(0);
-    assert(krkr2_host_load_bookmark_is_ready() == 0);
-    // KAG starts with inStable=true while scripts/layers are still being built.
     kag.properties[L"inStable"] = tTJSVariant(1);
+    // A callable loader and default stable flag can be visible while a JSPI
+    // tick is still suspended within script initialization.
+    testLoopPending = true;
     assert(krkr2_host_load_bookmark_is_ready() == 0);
+    assert(krkr2_host_load_bookmark(1999) == kBookmarkRejected);
+    assert(krkr2_host_load_bookmark_state() == kLoadIdle);
+    assert(krkr2_host_bookmark_is_ready() == 0);
+    testLoopPending = false;
+    // A complete startup tick can leave KAG awaiting input without notifying
+    // stable or starting its first scenario process. Existing saves can load.
+    kag.properties[L"inStable"] = tTJSVariant(0);
     kag.properties[L"isFirstProcess"] = tTJSVariant(1);
-    assert(krkr2_host_load_bookmark_is_ready() == 0);
-    // The first process clears isFirstProcess and calls notifyRun before the
-    // startup scenario runs. Only its later stable click-wait is loadable.
-    kag.properties[L"isFirstProcess"] = tTJSVariant(0);
-    kag.properties.erase(L"inStable");
-    assert(krkr2_host_load_bookmark_is_ready() == 0);
-    kag.properties[L"inStable"] = tTJSVariant(&kag);
-    assert(krkr2_host_load_bookmark_is_ready() == 0);
-    kag.properties[L"inStable"] = tTJSVariant(0);
-    assert(krkr2_host_load_bookmark_is_ready() == 0);
-    kag.properties[L"inStable"] = tTJSVariant(1);
     assert(krkr2_host_load_bookmark_is_ready() == 1);
     assert(krkr2_host_bookmark_is_ready() == 0);
-    // Load once through the real queued bridge, without advancing startup.
     assert(krkr2_host_load_bookmark(1999) == 0);
     assert(krkr2_host_load_bookmark_state() == 1);
     assert(load.calls == 0);
+    // The callback executes within its own Cocos tick: do not reject it merely
+    // because that tick is active or the startup scene is not a savepoint.
+    testLoopPending = true;
     cocos2d::Director::getInstance()->scheduler.queued();
     assert(load.calls == 1 && load.slot == 1999);
     assert(krkr2_host_load_bookmark_state() == 2);
+    testLoopPending = false;
+    kag.properties[L"inStable"] = tTJSVariant(1);
     assert(krkr2_host_bookmark_is_ready() == 0);
     kag.properties[L"currentLabel"] = tTJSVariant(L"*chapter");
+    assert(krkr2_host_bookmark_is_ready() == 1);
+    kag.properties.erase(L"inStable");
+    assert(krkr2_host_bookmark_is_ready() == 0);
+    kag.properties[L"inStable"] = tTJSVariant(&kag);
+    assert(krkr2_host_bookmark_is_ready() == 0);
     kag.properties[L"inStable"] = tTJSVariant(0);
     assert(krkr2_host_bookmark_is_ready() == 0);
+    assert(krkr2_host_save_bookmark(1999) == kBookmarkRejected);
     kag.properties[L"inStable"] = tTJSVariant(1);
-    assert(krkr2_host_bookmark_is_ready() == 1);
-    // A queued host operation must not call into a game that resumed running
-    // after the readiness query but before the Cocos scheduler executes it.
-    load_state.store(kLoadIdle);
-    assert(krkr2_host_load_bookmark(1999) == 0);
-    kag.properties[L"inStable"] = tTJSVariant(0);
-    cocos2d::Director::getInstance()->scheduler.queued();
-    assert(krkr2_host_load_bookmark_state() == kBookmarkRejected);
-    assert(load.calls == 1);
-    kag.properties[L"inStable"] = tTJSVariant(1);
+    testLoopStopping = true;
+    assert(krkr2_host_load_bookmark_is_ready() == 0);
+    assert(krkr2_host_bookmark_is_ready() == 0);
+    assert(krkr2_host_load_bookmark(1999) == kBookmarkRejected);
+    assert(krkr2_host_save_bookmark(1999) == kBookmarkRejected);
+    testLoopStopping = false;
     save.callException = 1;
     assert(krkr2_host_save_bookmark(1999) == kScriptException);
     save.callException = 2;

@@ -188,3 +188,20 @@ for (const order of ["running", "stop-before-abort", "abort-before-stop", "stop-
   assert.deepEqual(errors, order === "stop-before-abort" ? [] : [error], order);
 }
 console.log("JSPI cancellation ownership tests passed");
+
+// Execute the actual EM_JS body used by the native bookmark boundary.
+const bookmarkSource = fs.readFileSync(path.resolve(testDir,
+    "../../cpp/core/environ/web/HostBookmarkBridge.cpp"), "utf8");
+const idleBody = bookmarkSource.match(/EM_JS\(int, krkr2_host_main_loop_is_idle, \(\), \{([\s\S]*?)\n\}\);/);
+assert.ok(idleBody, "native idle boundary must be present");
+const idleQuery = "(function() {" + idleBody[1] + "})()";
+for (const [name, state, expected] of [
+  ["unregistered", undefined, 0],
+  ["initializing", {pending: Promise.resolve(), stopping: false}, 0],
+  ["idle", {pending: null, stopping: false}, 1],
+  ["stopping", {pending: null, stopping: true}, 0],
+]) {
+  assert.equal(vm.runInNewContext(idleQuery,
+      {__krkr2MainLoopPromiseState: state}), expected, name);
+}
+console.log("Native bookmark idle boundary tests passed");

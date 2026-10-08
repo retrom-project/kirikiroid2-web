@@ -13,6 +13,16 @@
 #include <exception>
 #include <emscripten.h>
 
+// Host queries run outside the engine tick. JSPI can suspend a constructor
+// after publishing global.kag but before its layers and methods are complete.
+// Never inspect that partially constructed TJS object until the tick returns.
+EM_JS(int, krkr2_host_main_loop_is_idle, (), {
+    var state = globalThis.__krkr2MainLoopPromiseState;
+    return state && !state.pending && !state.stopping ? 1 : 0;
+});
+
+extern bool TVPStartupSuccess;
+
 namespace {
 constexpr int kBookmarkSucceeded = 0;
 constexpr int kScriptUnavailable = -1;
@@ -49,12 +59,8 @@ bool kagIsStable(const tTJSVariant &kag_value) {
     iTJSDispatch2 *kag = kag_value.Type() == tvtObject
                              ? kag_value.AsObjectNoAddRef()
                              : nullptr;
-    tTJSVariant first_process;
     tTJSVariant in_stable;
     return kag &&
-           kag->PropGet(0, TJS_W("isFirstProcess"), nullptr, &first_process,
-                        kag) == TJS_S_OK &&
-           first_process.Type() == tvtInteger && !first_process.operator bool() &&
            kag->PropGet(0, TJS_W("inStable"), nullptr, &in_stable, kag) == TJS_S_OK &&
            in_stable.Type() == tvtInteger && in_stable.operator bool();
 }
@@ -72,7 +78,7 @@ bool kagReachedSavePoint(const tTJSVariant &kag_value) {
     return label && label->GetLength() > 0;
 }
 
-int callKagBookmark(const tjs_char *name, tjs_int32 slot) noexcept {
+int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept {
     try {
         if(!TVPGetScriptDispatch()) return kScriptUnavailable;
         tTJSVariant kag_value;
@@ -81,9 +87,10 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot) noexcept {
             return kag_value.Type() == tvtObject ? kMethodUnavailable
                                                  : kKagUnavailable;
         }
-        // A load is queued on the Cocos thread. Recheck the native stable
-        // state when it actually runs, after the host's readiness query.
-        if(!kagIsStable(kag_value)) return kBookmarkRejected;
+        // Capturing needs a script savepoint. Loading can replace a startup
+        // wait that never notifies KAG stable; it was queued only after the
+        // initialization tick returned, and now runs within its own tick.
+        if(capture && !kagReachedSavePoint(kag_value)) return kBookmarkRejected;
         iTJSDispatch2 *kag = kag_value.AsObjectNoAddRef();
         iTJSDispatch2 *method = method_value.AsObjectNoAddRef();
         tTJSVariant result;
@@ -105,6 +112,8 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot) noexcept {
 }
 
 int scheduleKagLoad(tjs_int32 slot) noexcept {
+    if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle())
+        return kBookmarkRejected;
     int expected = kLoadIdle;
     if(!load_state.compare_exchange_strong(expected, kLoadPending)) {
         return kLoadAlreadyRequested;
@@ -117,7 +126,7 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
             return kScriptUnavailable;
         }
         scheduler->performFunctionInCocosThread([slot] {
-            const int result = callKagBookmark(TJS_W("loadBookMark"), slot);
+            const int result = callKagBookmark(TJS_W("loadBookMark"), slot, false);
             load_state.store(result == kBookmarkSucceeded ? kLoadSucceeded
                                                           : result);
         });
@@ -130,16 +139,21 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
 } // namespace
 
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
-    // Web host boundary: startup may wait for user input before reaching a
-    // savepoint. KAG initializes inStable=true before construction finishes.
-    // Its first process clears isFirstProcess and notifies run before executing
-    // the scenario. Require the subsequent stable state, which can be a startup
-    // click-wait without a save label, so initialization cannot overwrite load.
+    static int observed_startup = -1;
+    if(observed_startup != static_cast<int>(TVPStartupSuccess)) {
+        observed_startup = TVPStartupSuccess;
+        std::fprintf(stderr, "[bookmark] startup completed=%d, idle=%d\n",
+                     observed_startup, krkr2_host_main_loop_is_idle());
+    }
+    // Startup success is set only after startup.tjs / Initialize.tjs returns.
+    // Loader availability is meaningful only between complete engine ticks.
+    // Script stable/save-label flags can require input during startup, so they
+    // belong to capture readiness, not to loading an existing bookmark.
+    if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle()) return 0;
     try {
         tTJSVariant kag_value;
         tTJSVariant load_method;
-        return findKagMethod(TJS_W("loadBookMark"), kag_value, load_method) &&
-                       kagIsStable(kag_value)
+        return findKagMethod(TJS_W("loadBookMark"), kag_value, load_method)
                    ? 1
                    : 0;
     } catch(...) {
@@ -148,6 +162,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_bookmark_is_ready() {
+    if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle()) return 0;
     try {
         tTJSVariant kag_value;
         tTJSVariant save_method;
@@ -167,7 +182,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_bookmark_is_ready() {
 
 extern "C" EMSCRIPTEN_KEEPALIVE int
 krkr2_host_save_bookmark(int slot) {
-    return callKagBookmark(TJS_W("saveBookMark"), slot);
+    if(!krkr2_host_main_loop_is_idle()) return kBookmarkRejected;
+    return callKagBookmark(TJS_W("saveBookMark"), slot, true);
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE int
