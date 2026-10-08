@@ -20,7 +20,10 @@ const mainLoop = {
     this.scheduler = null;
   },
 };
-const module = {};
+let bookmarkCancels = 0;
+const module = {
+  _krkr2_host_cancel_bookmark_load() { ++bookmarkCancels; },
+};
 
 const context = vm.createContext({
   addToLibrary(value) {
@@ -139,14 +142,19 @@ for (const rejectTick of [false, true]) {
   mainLoop.scheduler();
   const framesAtStop = scheduledFrames;
   let stopped = false;
+  const cancelsAtStop = bookmarkCancels;
   const stopping = module.krkr2StopMainLoop().then(() => { stopped = true; });
   assert.equal(mainLoop.scheduler, null, "stop must pause before returning");
   await Promise.resolve();
   assert.equal(stopped, false, "stop must retain a suspended JSPI tick");
+  assert.equal(bookmarkCancels, cancelsAtStop,
+      "observer cancellation must not reenter the suspended TJS stack");
   settleTick();
   await pendingTick.catch(() => {});
   await stopping;
   assert.equal(stopped, true, "both successful and rejected reads must drain");
+  assert.equal(bookmarkCancels, cancelsAtStop + 1,
+      "observer cancellation must run after either drain outcome");
   assert.equal(scheduledFrames, framesAtStop, "stop must not schedule another frame");
 }
 await module.krkr2StopMainLoop();
@@ -160,7 +168,7 @@ for (const order of ["running", "stop-before-abort", "abort-before-stop", "stop-
   const tick = new Promise((_resolve, reject) => { rejectTick = reject; });
   const errors = [];
   const loop = {func: null, scheduler: null, pause() { this.scheduler = null; }};
-  const instance = {};
+  const instance = {_krkr2_host_cancel_bookmark_load() {}};
   let api;
   const sandbox = vm.createContext({
     addToLibrary(value) { api = value; },

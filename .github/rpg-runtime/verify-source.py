@@ -47,6 +47,7 @@ def main() -> int:
         raise SystemExit("RPG_RUNTIME_FORK_MANIFEST_INVALID")
     require("CMakeLists.txt", (
         "_krkr2_host_load_bookmark_is_ready",
+        "_krkr2_host_cancel_bookmark_load",
         "_krkr2_host_bookmark_is_ready", "_krkr2_host_save_bookmark",
         "_krkr2_host_load_bookmark", "_krkr2_host_load_bookmark_state",
     ))
@@ -54,6 +55,7 @@ def main() -> int:
     require("platforms/web/jspi_jsc_mainloop_fix.js", ("krkr2StopMainLoop",))
     require("cpp/core/environ/web/HostBookmarkBridge.cpp", (
         "krkr2_host_load_bookmark_is_ready",
+        "krkr2_host_cancel_bookmark_load",
         "krkr2_host_bookmark_is_ready", "krkr2_host_save_bookmark",
         "krkr2_host_load_bookmark", "krkr2_host_load_bookmark_state",
         "findKagMethod", "kagReachedSavePoint", "scheduleKagLoad",

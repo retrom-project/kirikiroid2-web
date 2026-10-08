@@ -4,14 +4,15 @@
 // exposes the KAG bookmark API already provided by a loaded game so a browser
 // host can request a semantic checkpoint without snapshotting Wasm memory.
 #include "ScriptMgnIntf.h"
-#include "EventIntf.h"
+#include "base/CCDirector.h"
+#include "base/CCScheduler.h"
 #include "tjsObject.h"
 #include "tjsCommHead.h"
 
 #include <atomic>
 #include <cstdio>
 #include <exception>
-#include <string>
+#include <memory>
 #include <emscripten.h>
 
 // Host queries run outside the engine tick. JSPI can suspend a constructor
@@ -47,80 +48,6 @@ public:
         if(value) value->Release();
     }
 };
-
-#ifdef __EMSCRIPTEN__
-EM_JS(int, trace_bookmarks_enabled, (), {
-    return Module['krkr2TraceBookmarks'] ? 1 : 0;
-});
-
-void traceBookmarkState(const char *stage) noexcept {
-    if(!trace_bookmarks_enabled()) return;
-    try {
-        auto read = [](iTJSDispatch2 *object, const char *name) {
-            tTJSVariant value;
-            if(object) {
-                try {
-                    const ttstr key(name);
-                    object->PropGet(0, key.c_str(), nullptr, &value, object);
-                } catch(...) {}
-            }
-            return value;
-        };
-        auto object = [](const tTJSVariant &value) {
-            return value.Type() == tvtObject ? value.AsObjectNoAddRef() : nullptr;
-        };
-        ScriptDispatch global;
-        tTJSVariant kag_value = read(global.value, "kag");
-        auto *kag = object(kag_value);
-        std::string trace;
-        auto fields = [&](const char *prefix, iTJSDispatch2 *target,
-                          std::initializer_list<const char *> names) {
-            trace += std::string(prefix) + "@" + std::to_string(reinterpret_cast<uintptr_t>(target)) + "{";
-            for(auto name : names) {
-                const auto value = read(target, name);
-                trace += std::string(name) + ":";
-                if(value.Type() == tvtObject)
-                    trace += "@" + std::to_string(reinterpret_cast<uintptr_t>(object(value)));
-                else
-                    trace += ttstr(value).AsStdString();
-                trace += ",";
-            }
-            trace += "}";
-        };
-        fields("kag", kag, {"currentStorage", "currentLabel", "inStable", "isFirstProcess", "currentPage", "currentNum", "inSleep", "inTransition", "inFlipInterval", "flipStartFlag", "transShowing", "visible", "inShow", "usingExtraConductor", "_clickWaiting", "isWaitPeriodEvent", "holdPeriodEventQueue"});
-        auto can_restore = read(kag, "canRestore");
-        if(auto *method = object(can_restore)) {
-            tTJSVariant result;
-            method->FuncCall(0, nullptr, nullptr, &result, 0, nullptr, kag);
-            trace += "canRestore:" + ttstr(result).AsStdString();
-        }
-        for(auto name : {"conductor", "mainConductor", "extraConductor"}) {
-            auto conductor = read(kag, name);
-            fields(name, object(conductor), {"status", "curStorage", "curLine", "enabled", "interval", "timer", "oneshot", "oneShot", "tickCount"});
-            auto timer = read(object(conductor), "timer");
-            fields("timer", object(timer), {"enabled", "interval"});
-        }
-        auto layer = [&](const char *name, const tTJSVariant &value) {
-            fields(name, object(value), {"visible", "opacity", "hasImage", "imageWidth", "imageHeight", "width", "height", "left", "top", "type", "parent", "absolute", "imageLeft", "imageTop", "drawPlane"});
-        };
-        for(auto name : {"_primaryLayer", "sysbase", "uibase", "btLayer", "_transLayer", "current", "snapshotLayer", "_sysCoverLayer"})
-            layer(name, read(kag, name));
-        for(auto name : {"fore", "back"}) {
-            auto page = read(kag, name);
-            layer(name, read(object(page), "base"));
-        }
-        static std::string last;
-        if(trace != last || std::string(stage) != "poll") {
-            last = trace;
-            std::fprintf(stderr, "[bookmark-trace] %s %s\n", stage, trace.c_str());
-        }
-    } catch(...) {
-        std::fprintf(stderr, "[bookmark-trace] observation failed\n");
-    }
-}
-#else
-void traceBookmarkState(const char *) noexcept {}
-#endif
 
 bool findKagMethod(const tjs_char *name, tTJSVariant &kag_value,
                    tTJSVariant &method_value) {
@@ -177,7 +104,7 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept
         }
         // Capturing needs a script savepoint. Loading can replace a startup
         // wait that never notifies KAG stable; it was posted only after the
-        // initialization tick returned, and now runs as a native idle event.
+        // initialization tick returned, and now runs within its own engine tick.
         if(capture && !kagReachedSavePoint(kag_value)) return kBookmarkRejected;
         iTJSDispatch2 *kag = kag_value.AsObjectNoAddRef();
         iTJSDispatch2 *method = method_value.AsObjectNoAddRef();
@@ -199,134 +126,176 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept
     }
 }
 
-#ifdef __EMSCRIPTEN__
-EM_JS(int, normal_load_probe_enabled, (), {
-    return Module['krkr2NormalLoadProbe'] ? 1 : 0;
-});
+struct ReleaseDispatch {
+    void operator()(iTJSDispatch2 *value) const { if(value) value->Release(); }
+};
+using OwnedDispatch = std::unique_ptr<iTJSDispatch2, ReleaseDispatch>;
+iTJSDispatch2 *retainDispatch(iTJSDispatch2 *value) {
+    value->AddRef();
+    return value;
+}
+
+// Explicit ownership covers an asynchronous framework load. The observer holds
+// only the function, so failed detachment cannot create a receiver/reference cycle.
+struct PendingLoad {
+    OwnedDispatch kag;
+    tTJSVariant original;
+    OwnedDispatch observer;
+
+    PendingLoad(iTJSDispatch2 *receiver, const tTJSVariant &method,
+                 iTJSDispatch2 *callback)
+        : kag(retainDispatch(receiver)), original(method),
+          observer(retainDispatch(callback)) {}
+
+    bool detach() noexcept {
+        try {
+            tTJSVariant current;
+            if(kag->PropGet(0, TJS_W("loadBookMark"), nullptr,
+                            &current, kag.get()) != TJS_S_OK)
+                return false;
+            // Do not overwrite a replacement installed by the game.
+            if(current.Type() != tvtObject ||
+               current.AsObjectNoAddRef() != observer.get()) return true;
+            return kag->PropSet(TJS_MEMBERENSURE, TJS_W("loadBookMark"), nullptr,
+                                &original, kag.get()) == TJS_S_OK;
+        } catch(...) {
+            return false;
+        }
+    }
+
+    ~PendingLoad() {
+        if(!detach())
+            std::fprintf(stderr, "[bookmark] cannot detach load observer\n");
+    }
+};
+std::unique_ptr<PendingLoad> pending_load;
 
 class BookmarkLoadObserver final : public tTJSDispatch {
-    iTJSDispatch2 *kag_;
     tTJSVariant method_;
+    tjs_int32 slot_;
 
 public:
-    BookmarkLoadObserver(iTJSDispatch2 *kag, const tTJSVariant &method)
-        : kag_(kag), method_(method) {}
+    BookmarkLoadObserver(const tTJSVariant &method, tjs_int32 slot)
+        : method_(method.AsObjectNoAddRef(), nullptr), slot_(slot) {}
 
     tjs_error IsInstanceOf(tjs_uint32, const tjs_char *, tjs_uint32 *,
                            const tjs_char *name, iTJSDispatch2 *) override {
         return ttstr(name) == TJS_W("Function") ? TJS_S_TRUE : TJS_S_FALSE;
     }
 
-    void restore() {
-        kag_->PropSet(TJS_MEMBERENSURE, TJS_W("loadBookMark"), nullptr,
-                       &method_, kag_);
-    }
-
     tjs_error FuncCall(tjs_uint32 flag, const tjs_char *name, tjs_uint32 *hint,
                        tTJSVariant *result, tjs_int count, tTJSVariant **params,
                        iTJSDispatch2 *objthis) override {
         AddRef();
+        OwnedDispatch self(this);
+        const bool requested = pending_load &&
+            pending_load->observer.get() == this && count >= 1 && params &&
+            params[0] && params[0]->Type() == tvtInteger &&
+            static_cast<tjs_int32>(*params[0]) == slot_;
+        auto owner = requested ? std::move(pending_load) : nullptr;
+        if(owner && !owner->detach()) {
+            load_state.store(kScriptException);
+            return TJS_E_FAIL;
+        }
         try {
-            restore();
             tTJSVariant local_result;
             if(!result) result = &local_result;
-            std::fprintf(stderr, "[bookmark] framework invoked original loader\n");
             const auto status = method_.AsObjectNoAddRef()->FuncCall(
                 flag, name, hint, result, count, params, objthis);
-            load_state.store(status == TJS_S_OK && result->operator bool()
-                                 ? kLoadSucceeded : kBookmarkRejected);
-            std::fprintf(stderr, "[bookmark] original loader completed=%d\n", load_state.load());
-            Release();
+            if(owner) {
+                load_state.store(status != TJS_S_OK ? kMethodUnavailable :
+                    result->operator bool() ? kLoadSucceeded : kBookmarkRejected);
+            }
             return status;
+        } catch(const std::exception &error) {
+            if(owner) {
+                load_state.store(kScriptException);
+                std::fprintf(stderr, "[bookmark] script exception: %s\n", error.what());
+            }
+            throw;
         } catch(...) {
-            load_state.store(kScriptException);
-            Release();
+            if(owner) {
+                load_state.store(kScriptException);
+                std::fprintf(stderr, "[bookmark] unknown script exception\n");
+            }
             throw;
         }
     }
 };
 
-void probeNormalLoad(tjs_int32 slot) {
-    ScriptDispatch global;
-    tTJSVariant kag_value, method, entry;
-    if(!global.value || !findKagMethod(TJS_W("loadBookMark"), kag_value, method) ||
-       global.value->PropGet(0, TJS_W("loadFunction"), nullptr, &entry,
-                             global.value) != TJS_S_OK || entry.Type() != tvtObject) {
-        load_state.store(kMethodUnavailable);
-        return;
-    }
-    auto *kag = kag_value.AsObjectNoAddRef();
-    auto *observer = new BookmarkLoadObserver(kag, method);
+int startKagLoad(tjs_int32 slot) noexcept {
     try {
-        tTJSVariant wrapped(observer, nullptr);
-        kag->PropSet(TJS_MEMBERENSURE, TJS_W("loadBookMark"), nullptr, &wrapped, kag);
-        tTJSVariant slot_value(slot), result;
-        tTJSVariant *argument = &slot_value;
-        const auto status = entry.AsObjectNoAddRef()->FuncCall(
-            0, nullptr, nullptr, &result, 1, &argument, global.value);
-        if(status != TJS_S_OK) {
-            observer->restore();
-            load_state.store(kMethodUnavailable);
+        ScriptDispatch global;
+        tTJSVariant kag, method, entry;
+        if(!global.value) return kScriptUnavailable;
+        if(!findKagMethod(TJS_W("loadBookMark"), kag, method))
+            return kag.Type() == tvtObject ? kMethodUnavailable : kKagUnavailable;
+
+        // KAGEX's public loadFunction(slot) performs framework loadinit before
+        // calling the KAG bookmark method. Plain KAG has no framework entry.
+        // Reference: krkrz/krkr2@dec49af97, kag3ex3/data/main/Override.tjs.
+        // Never bypass a present framework entry after rejection or failure.
+        if(global.value->PropGet(0, TJS_W("loadFunction"), nullptr, &entry,
+                                  global.value) != TJS_S_OK || entry.Type() == tvtVoid) {
+            const int outcome = callKagBookmark(TJS_W("loadBookMark"), slot, false);
+            load_state.store(outcome == kBookmarkSucceeded ? kLoadSucceeded : outcome);
+            return outcome;
         }
-        observer->Release();
+        if(entry.Type() != tvtObject || !entry.AsObjectNoAddRef() ||
+           entry.AsObjectNoAddRef()->IsInstanceOf(0, nullptr, nullptr,
+               TJS_W("Function"), entry.AsObjectNoAddRef()) != TJS_S_TRUE)
+            return kMethodUnavailable;
+
+        OwnedDispatch observer(new BookmarkLoadObserver(method, slot));
+        pending_load = std::make_unique<PendingLoad>(
+            kag.AsObjectNoAddRef(), method, observer.get());
+        tTJSVariant wrapped(observer.get(), nullptr);
+        if(kag.AsObjectNoAddRef()->PropSet(TJS_MEMBERENSURE, TJS_W("loadBookMark"),
+            nullptr, &wrapped, kag.AsObjectNoAddRef()) != TJS_S_OK) {
+            pending_load.reset();
+            return kMethodUnavailable;
+        }
+        tTJSVariant result, slot_value(slot);
+        tTJSVariant *argument = &slot_value;
+        if(entry.AsObjectNoAddRef()->FuncCall(0, nullptr, nullptr, &result, 1,
+                                             &argument, global.value) != TJS_S_OK) {
+            pending_load.reset();
+            return kMethodUnavailable;
+        }
+        // The entry can return before loading, and need not return a value.
+        // Only its original bookmark call completes the host operation.
+        return kBookmarkSucceeded;
+    } catch(const std::exception &error) {
+        pending_load.reset();
+        std::fprintf(stderr, "[bookmark] script exception: %s\n", error.what());
+        return kScriptException;
     } catch(...) {
-        observer->restore();
-        observer->Release();
-        load_state.store(kScriptException);
-        throw;
+        pending_load.reset();
+        std::fprintf(stderr, "[bookmark] unknown script exception\n");
+        return kScriptException;
     }
 }
-#endif
-
-class LoadBookmarkEvent final : public tTJSDispatch {
-    tjs_int32 slot_;
-
-public:
-    explicit LoadBookmarkEvent(tjs_int32 slot) : slot_(slot) {}
-
-    tjs_error IsValid(tjs_uint32, const tjs_char *, tjs_uint32 *,
-                      iTJSDispatch2 *) override {
-        return TJS_S_TRUE;
-    }
-
-    tjs_error FuncCall(tjs_uint32, const tjs_char *, tjs_uint32 *,
-                       tTJSVariant *, tjs_int, tTJSVariant **,
-                       iTJSDispatch2 *) override {
-        std::fprintf(stderr, "[bookmark] native idle event dispatch\n");
-        traceBookmarkState("before-load");
-#ifdef __EMSCRIPTEN__
-        if(normal_load_probe_enabled()) {
-            probeNormalLoad(slot_);
-            return TJS_S_OK;
-        }
-#endif
-        const int result = callKagBookmark(TJS_W("loadBookMark"), slot_, false);
-        traceBookmarkState("after-load");
-        load_state.store(result == kBookmarkSucceeded ? kLoadSucceeded : result);
-        return TJS_S_OK;
-    }
-};
 
 int scheduleKagLoad(tjs_int32 slot) noexcept {
     if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle())
         return kBookmarkRejected;
     int expected = kLoadIdle;
-    if(!load_state.compare_exchange_strong(expected, kLoadPending)) {
+    if(!load_state.compare_exchange_strong(expected, kLoadPending))
         return kLoadAlreadyRequested;
-    }
-    LoadBookmarkEvent *event = nullptr;
     try {
-        event = new LoadBookmarkEvent(slot);
-        ttstr name(TJS_W("loadBookMark"));
-        // Loading is a script event. Let startup input/normal events finish
-        // before the host load, instead of calling into TJS from the Cocos
-        // scheduler before the engine's own event delivery phase.
-        TVPPostEvent(event, event, name, 0, TVP_EPT_POST | TVP_EPT_IDLE,
-                     0, nullptr);
-        event->Release();
+        auto *director = cocos2d::Director::getInstance();
+        auto *scheduler = director ? director->getScheduler() : nullptr;
+        if(!scheduler) {
+            load_state.store(kScriptUnavailable);
+            return kScriptUnavailable;
+        }
+        scheduler->performFunctionInCocosThread([slot] {
+            if(load_state.load() != kLoadPending) return;
+            const int outcome = startKagLoad(slot);
+            if(outcome != kBookmarkSucceeded) load_state.store(outcome);
+        });
         return kBookmarkSucceeded;
     } catch(...) {
-        if(event) event->Release();
         load_state.store(kScriptException);
         return kScriptException;
     }
@@ -334,12 +303,6 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
 } // namespace
 
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
-    static int observed_startup = -1;
-    if(observed_startup != static_cast<int>(TVPStartupSuccess)) {
-        observed_startup = TVPStartupSuccess;
-        std::fprintf(stderr, "[bookmark] startup completed=%d, idle=%d\n",
-                     observed_startup, krkr2_host_main_loop_is_idle());
-    }
     // Startup success is set only after startup.tjs / Initialize.tjs returns.
     // Loader availability is meaningful only between complete engine ticks.
     // Script stable/save-label flags can require input during startup, so they
@@ -358,7 +321,6 @@ extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
 
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_bookmark_is_ready() {
     if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle()) return 0;
-    traceBookmarkState("poll");
     try {
         tTJSVariant kag_value;
         tTJSVariant save_method;
@@ -390,4 +352,10 @@ krkr2_host_load_bookmark(int slot) {
 extern "C" EMSCRIPTEN_KEEPALIVE int
 krkr2_host_load_bookmark_state() {
     return load_state.load();
+}
+
+// Stop calls this after the JSPI stack drains, while the TJS objects are alive.
+extern "C" EMSCRIPTEN_KEEPALIVE void krkr2_host_cancel_bookmark_load() {
+    pending_load.reset();
+    if(load_state.load() == kLoadPending) load_state.store(kBookmarkRejected);
 }

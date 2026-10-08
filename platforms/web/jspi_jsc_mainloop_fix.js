@@ -44,7 +44,8 @@ addToLibrary({
     Module['krkr2StopMainLoop'] = () => {
       promiseState.stopping = true;
       MainLoop.pause();
-      return Promise.resolve(promiseState.pending).then(() => {}, () => {});
+      var cancelBookmark = () => Module['_krkr2_host_cancel_bookmark_load']();
+      return Promise.resolve(promiseState.pending).then(cancelBookmark, cancelBookmark);
     };
     // Browser-only frame-pump policy. Keep RAF as the sole scheduler, but use
     // its display-synchronised timestamp to limit how often the WASM main loop
