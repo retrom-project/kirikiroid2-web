@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdio>
 #include <exception>
+#include <string>
 #include <emscripten.h>
 
 // Host queries run outside the engine tick. JSPI can suspend a constructor
@@ -35,6 +36,71 @@ constexpr int kLoadIdle = 0;
 constexpr int kLoadPending = 1;
 constexpr int kLoadSucceeded = 2;
 std::atomic<int> load_state{kLoadIdle};
+
+#ifdef __EMSCRIPTEN__
+EM_JS(int, trace_bookmarks_enabled, (), {
+    return Module['krkr2TraceBookmarks'] ? 1 : 0;
+});
+
+void traceBookmarkState(const char *stage) noexcept {
+    if(!trace_bookmarks_enabled()) return;
+    try {
+        auto read = [](iTJSDispatch2 *object, const char *name) {
+            tTJSVariant value;
+            if(object) {
+                try {
+                    const ttstr key(name);
+                    object->PropGet(0, key.c_str(), nullptr, &value, object);
+                } catch(...) {}
+            }
+            return value;
+        };
+        auto object = [](const tTJSVariant &value) {
+            return value.Type() == tvtObject ? value.AsObjectNoAddRef() : nullptr;
+        };
+        tTJSVariant kag_value = read(TVPGetScriptDispatch(), "kag");
+        auto *kag = object(kag_value);
+        std::string trace;
+        auto fields = [&](const char *prefix, iTJSDispatch2 *target,
+                          std::initializer_list<const char *> names) {
+            trace += std::string(prefix) + "@" + std::to_string(reinterpret_cast<uintptr_t>(target)) + "{";
+            for(auto name : names) {
+                const auto value = read(target, name);
+                trace += std::string(name) + ":";
+                if(value.Type() == tvtObject)
+                    trace += "@" + std::to_string(reinterpret_cast<uintptr_t>(object(value)));
+                else
+                    trace += ttstr(value).AsStdString();
+                trace += ",";
+            }
+            trace += "}";
+        };
+        fields("kag", kag, {"currentStorage", "currentLabel", "inStable", "isFirstProcess", "currentPage", "currentNum", "inSleep", "inTransition", "inFlipInterval", "flipStartFlag", "transShowing", "visible", "inShow", "usingExtraConductor"});
+        for(auto name : {"conductor", "mainConductor", "extraConductor"}) {
+            auto conductor = read(kag, name);
+            fields(name, object(conductor), {"status", "curStorage", "curLine", "enabled", "interval", "timer", "oneshot", "oneShot", "tickCount"});
+        }
+        auto layer = [&](const char *name, const tTJSVariant &value) {
+            fields(name, object(value), {"visible", "opacity", "hasImage", "imageWidth", "imageHeight", "width", "height", "left", "top", "type", "parent", "absolute", "imageLeft", "imageTop", "drawPlane"});
+        };
+        for(auto name : {"_primaryLayer", "sysbase", "uibase", "btLayer", "_transLayer", "current", "snapshotLayer"})
+            layer(name, read(kag, name));
+        for(auto name : {"fore", "back"}) {
+            auto page = read(kag, name);
+            layer(name, read(object(page), "base"));
+        }
+        static std::string last;
+        if(trace != last || std::string(stage) != "poll") {
+            last = trace;
+            std::fprintf(stderr, "[bookmark-trace] %s %s\n", stage, trace.c_str());
+        }
+    } catch(...) {
+        std::fprintf(stderr, "[bookmark-trace] observation failed\n");
+    }
+}
+#else
+void traceBookmarkState(const char *) noexcept {}
+#endif
 
 bool findKagMethod(const tjs_char *name, tTJSVariant &kag_value,
                    tTJSVariant &method_value) {
@@ -126,7 +192,9 @@ public:
                        tTJSVariant *, tjs_int, tTJSVariant **,
                        iTJSDispatch2 *) override {
         std::fprintf(stderr, "[bookmark] native idle event dispatch\n");
+        traceBookmarkState("before-load");
         const int result = callKagBookmark(TJS_W("loadBookMark"), slot_, false);
+        traceBookmarkState("after-load");
         load_state.store(result == kBookmarkSucceeded ? kLoadSucceeded : result);
         return TJS_S_OK;
     }
@@ -183,6 +251,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
 
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_bookmark_is_ready() {
     if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle()) return 0;
+    traceBookmarkState("poll");
     try {
         tTJSVariant kag_value;
         tTJSVariant save_method;
