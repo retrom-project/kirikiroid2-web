@@ -38,6 +38,10 @@ struct tTJSVariant {
     explicit operator bool() const { return type == tvtObject ? object != nullptr : integer != 0; }
 };
 struct iTJSDispatch2 {
+    int references = 1;
+    virtual ~iTJSDispatch2() = default;
+    void AddRef() { ++references; }
+    void Release() { if(--references == 0) delete this; }
     std::map<std::wstring, tTJSVariant> properties;
     bool function = false;
     bool throws = false;
@@ -67,14 +71,14 @@ struct iTJSDispatch2 {
     }
 };
 iTJSDispatch2 *testGlobal = nullptr;
-iTJSDispatch2 *TVPGetScriptDispatch() { return testGlobal; }
+iTJSDispatch2 *TVPGetScriptDispatch() {
+    if(testGlobal) testGlobal->AddRef();
+    return testGlobal;
+}
 int liveDispatches = 0;
 struct tTJSDispatch : iTJSDispatch2 {
-    int references = 1;
     tTJSDispatch() { ++liveDispatches; }
     virtual ~tTJSDispatch() { --liveDispatches; }
-    void AddRef() { ++references; }
-    void Release() { if(--references == 0) delete this; }
     virtual tjs_error IsValid(tjs_uint32, const tjs_char *, tjs_uint32 *, iTJSDispatch2 *) { return TJS_S_TRUE; }
 };
 constexpr tjs_uint32 TVP_EPT_POST = 0;
@@ -183,4 +187,7 @@ int main() {
     assert(krkr2_host_save_bookmark(1999) == kScriptException);
     global.throws = true;
     assert(krkr2_host_load_bookmark_is_ready() == 0);
+    // GetGlobal returns an owned reference, including when property lookup
+    // fails or throws. Polling and save/load calls must release every lookup.
+    assert(global.references == 1);
 }
