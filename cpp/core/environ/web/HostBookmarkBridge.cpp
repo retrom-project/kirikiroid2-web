@@ -37,9 +37,10 @@ bool findKagMethod(const tjs_char *name, tTJSVariant &kag_value,
     return kag && kag->PropGet(0, name, nullptr, &method_value, kag) ==
                       TJS_S_OK &&
            method_value.Type() == tvtObject &&
+           method_value.AsObjectNoAddRef() &&
            method_value.AsObjectNoAddRef()->IsInstanceOf(
                0, nullptr, nullptr, TJS_W("Function"),
-               method_value.AsObjectNoAddRef());
+               method_value.AsObjectNoAddRef()) == TJS_S_TRUE;
 }
 
 bool kagReachedSavePoint(const tTJSVariant &kag_value) {
@@ -108,6 +109,21 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
     }
 }
 } // namespace
+
+extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
+    // Web host boundary: startup may wait for user input before reaching a
+    // savepoint. Restoring only needs the game's loader to be initialized; it
+    // must not require input or manufacture a savepoint in the game script.
+    try {
+        tTJSVariant kag_value;
+        tTJSVariant load_method;
+        return findKagMethod(TJS_W("loadBookMark"), kag_value, load_method)
+                   ? 1
+                   : 0;
+    } catch(...) {
+        return 0;
+    }
+}
 
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_bookmark_is_ready() {
     try {

@@ -16,13 +16,18 @@ let handledError = null;
 const mainLoop = {
   func: null,
   scheduler: null,
+  pause() {
+    this.scheduler = null;
+  },
 };
+const module = {};
 
 const context = vm.createContext({
   addToLibrary(value) {
     library = value;
   },
   MainLoop: mainLoop,
+  Module: module,
   setMainLoop(iterFunc) {
     mainLoop.func = iterFunc;
     mainLoop.scheduler = () => {
@@ -120,3 +125,29 @@ assert.equal(
     "a rejected tick must not schedule another frame");
 
 console.log("JSPI main-loop Promise scheduler tests passed");
+
+// The host must be able to stop scheduling synchronously, then cancel content
+// reads while awaiting the suspended tick before removing Module/VLFS.
+for (const rejectTick of [false, true]) {
+  let settleTick;
+  tickImplementation = () => new Promise((resolve, reject) => {
+    settleTick = () => rejectTick ? reject(new Error("content aborted")) : resolve();
+  });
+  context.__tvpRafT += 17;
+  const pendingTick = mainLoop.func();
+  mainLoop.scheduler = () => { ++scheduledFrames; };
+  mainLoop.scheduler();
+  const framesAtStop = scheduledFrames;
+  let stopped = false;
+  const stopping = module.krkr2StopMainLoop().then(() => { stopped = true; });
+  assert.equal(mainLoop.scheduler, null, "stop must pause before returning");
+  await Promise.resolve();
+  assert.equal(stopped, false, "stop must retain a suspended JSPI tick");
+  settleTick();
+  await pendingTick.catch(() => {});
+  await stopping;
+  assert.equal(stopped, true, "both successful and rejected reads must drain");
+  assert.equal(scheduledFrames, framesAtStop, "stop must not schedule another frame");
+}
+await module.krkr2StopMainLoop();
+console.log("JSPI host stop/drain tests passed");

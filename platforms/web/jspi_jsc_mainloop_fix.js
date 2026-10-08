@@ -35,6 +35,15 @@ addToLibrary({
       MainLoop.__krkr2PromiseAwareSchedulerState = promiseState;
       globalThis.__krkr2MainLoopPromiseState = promiseState;
     }
+    // Web host lifetime boundary: pause prevents another frame, but a tick
+    // suspended in a content read still owns the Wasm stack and VLFS globals.
+    // The host cancels its readers after this synchronous pause, then awaits
+    // this drain before releasing those globals. A rejected tick is already
+    // reported by the scheduler below; draining must also finish on rejection.
+    Module['krkr2StopMainLoop'] = () => {
+      MainLoop.pause();
+      return Promise.resolve(promiseState.pending).then(() => {}, () => {});
+    };
     // Browser-only frame-pump policy. Keep RAF as the sole scheduler, but use
     // its display-synchronised timestamp to limit how often the WASM main loop
     // runs. The target defaults to 15 FPS and can be overridden with

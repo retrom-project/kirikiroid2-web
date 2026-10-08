@@ -35,6 +35,8 @@ jobs:
           git merge-base --is-ancestor 13dda190f8370d02b6cf59286a088529b355658c "$GITHUB_SHA"
           test -z "$(git rev-list --min-parents=2 13dda190f8370d02b6cf59286a088529b355658c.."$GITHUB_SHA")"
           python3 .github/rpg-runtime/verify-source.py
+          python3 .github/rpg-runtime/test-bookmark-bridge.py
+          node tests/web/jspi_mainloop_scheduler.test.mjs
       - name: Build Web assets
         run: .github/rpg-runtime/build-web.sh "$RUNNER_TEMP/rpg-runtime-output"
       - name: Validate and describe assets

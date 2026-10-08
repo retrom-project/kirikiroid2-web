@@ -24,6 +24,8 @@ jobs:
       - name: Validate fork source contract
         run: |
           python3 .github/rpg-runtime/verify-source.py
+          python3 .github/rpg-runtime/test-bookmark-bridge.py
+          node tests/web/jspi_mainloop_scheduler.test.mjs
           node .github/rpg-runtime/test-vlfs.mjs
       - name: Build Web assets
         run: .github/rpg-runtime/build-web.sh "$RUNNER_TEMP/rpg-runtime-output"

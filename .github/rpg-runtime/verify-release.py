@@ -53,6 +53,8 @@ def main() -> int:
         raise SystemExit("RPG_RUNTIME_RELEASE_ASSETS_ZIP_INVALID")
     javascript = paths["index.js"].read_text(encoding="utf-8")
     if any(marker not in javascript for marker in (
+        "krkr2_host_load_bookmark_is_ready",
+        "krkr2StopMainLoop",
         "krkr2_host_bookmark_is_ready", "krkr2_host_save_bookmark",
         "krkr2_host_load_bookmark", "krkr2_host_load_bookmark_state",
     )):
