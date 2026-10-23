@@ -10,9 +10,11 @@
 #include "tjsCommHead.h"
 
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <vector>
 #include <emscripten.h>
 
 // Host queries run outside the engine tick. JSPI can suspend a constructor
@@ -252,9 +254,8 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept
             return kag_value.Type() == tvtObject ? kMethodUnavailable
                                                  : kKagUnavailable;
         }
-        // Capturing needs a script savepoint. Loading can replace a startup
-        // wait that never notifies KAG stable; it was posted only after the
-        // initialization tick returned, and now runs within its own engine tick.
+        // Capture needs a savepoint. The restore coordinator has already let
+        // first-scenario initialization reach a load boundary within engine ticks.
         if(capture && !kagReachedSavePoint(kag_value)) return kBookmarkRejected;
         iTJSDispatch2 *kag = kag_value.AsObjectNoAddRef();
         iTJSDispatch2 *method = method_value.AsObjectNoAddRef();
@@ -427,6 +428,169 @@ int startKagLoad(tjs_int32 slot) noexcept {
     }
 }
 
+// The loader is published before a KAG first scenario has registered all its
+// macros/plugins. A host restore must finish that bootstrap before replacing
+// the scenario. This is Web host behavior, not a reconstructed native API.
+struct BootstrapWaitPoint {
+    tTJSVariant conductor;
+    ttstr storage;
+    tjs_int32 line;
+    tjs_int32 depth;
+
+    bool matches(const BootstrapWaitPoint &other) const {
+        return conductor.AsObjectNoAddRef() == other.conductor.AsObjectNoAddRef() &&
+               storage == other.storage && line == other.line && depth == other.depth;
+    }
+};
+
+struct BootstrapLoad {
+    std::uint64_t id;
+    tjs_int32 slot;
+    tTJSVariant kag;
+    std::vector<BootstrapWaitPoint> acknowledged;
+};
+std::shared_ptr<BootstrapLoad> bootstrap_load;
+std::uint64_t bootstrap_sequence = 0;
+constexpr std::size_t kMaxBootstrapSignals = 32;
+
+bool readProperty(iTJSDispatch2 *object, const tjs_char *name, tTJSVariant &value) {
+    return object && object->PropGet(0, name, nullptr, &value, object) == TJS_S_OK;
+}
+
+bool readInteger(iTJSDispatch2 *object, const tjs_char *name, tjs_int32 &value) {
+    tTJSVariant property;
+    if(!readProperty(object, name, property) || property.Type() != tvtInteger) return false;
+    value = static_cast<tjs_int32>(property);
+    return true;
+}
+
+bool isCallable(const tTJSVariant &value) {
+    return value.Type() == tvtObject && value.AsObjectNoAddRef() &&
+           value.AsObjectNoAddRef()->IsInstanceOf(
+               0, nullptr, nullptr, TJS_W("Function"), value.AsObjectNoAddRef()) == TJS_S_TRUE;
+}
+
+enum class BootstrapAction { Wait, Ready, Click };
+
+BootstrapAction inspectBootstrap(iTJSDispatch2 *kag, BootstrapWaitPoint &point,
+                                  tTJSVariant &trigger) {
+    tjs_int32 stable, first, status, running, waiting;
+    if(!readInteger(kag, TJS_W("inStable"), stable)) return BootstrapAction::Wait;
+    tTJSVariant conductor;
+    readProperty(kag, TJS_W("conductor"), conductor);
+    auto *current = conductor.Type() == tvtObject ? conductor.AsObjectNoAddRef() : nullptr;
+    const bool has_status = readInteger(current, TJS_W("status"), status);
+    const bool is_running = has_status && readInteger(current, TJS_W("mRun"), running) &&
+                            status == running;
+    if(is_running) return BootstrapAction::Wait;
+    if(stable) return BootstrapAction::Ready;
+
+    // Plain KAG can await host input before starting its first scenario at all.
+    // It has no initialization process to interrupt, unlike an active conductor.
+    tjs_int32 stopped;
+    if(readInteger(kag, TJS_W("isFirstProcess"), first) && first &&
+       (!current || (has_status && readInteger(current, TJS_W("mStop"), stopped) &&
+                     status == stopped))) return BootstrapAction::Ready;
+
+    tTJSVariant main, tag, waits, click, timer, storage;
+    tjs_int32 enabled, processing, line, depth;
+    tjs_int count;
+    if(!current || !has_status || !readInteger(current, TJS_W("mWait"), waiting) || status != waiting ||
+       !readInteger(current, TJS_W("timerEnabled"), processing) || processing ||
+       !readProperty(kag, TJS_W("mainConductor"), main) || main.Type() != tvtObject ||
+       main.AsObjectNoAddRef() != current ||
+       !readProperty(current, TJS_W("lastTagName"), tag) || tag.Type() != tvtString ||
+       !tag.AsStringNoAddRef() ||
+       ttstr(static_cast<const tjs_char *>(*tag.AsStringNoAddRef())) != TJS_W("waitclick") ||
+       !readProperty(current, TJS_W("waitUntil"), waits) || waits.Type() != tvtObject ||
+       !waits.AsObjectNoAddRef() ||
+       waits.AsObjectNoAddRef()->GetCount(&count, nullptr, nullptr, waits.AsObjectNoAddRef()) != TJS_S_OK || count != 1 ||
+       !readProperty(waits.AsObjectNoAddRef(), TJS_W("click"), click) || !isCallable(click) ||
+       !readProperty(current, TJS_W("timeOutTimer"), timer) || timer.Type() != tvtObject ||
+       !readInteger(timer.AsObjectNoAddRef(), TJS_W("enabled"), enabled) || enabled ||
+       !readProperty(current, TJS_W("trigger"), trigger) || !isCallable(trigger) ||
+       !readProperty(current, TJS_W("curStorage"), storage) || storage.Type() != tvtString ||
+       !storage.AsStringNoAddRef() || !storage.AsStringNoAddRef()->GetLength() ||
+       !readInteger(current, TJS_W("curLine"), line) || line < 0 ||
+       !readInteger(current, TJS_W("callStackDepth"), depth) || depth < 0)
+        return BootstrapAction::Wait;
+    point = {conductor, ttstr(static_cast<const tjs_char *>(*storage.AsStringNoAddRef())), line, depth};
+    return BootstrapAction::Click;
+}
+
+bool bootstrapIsCurrent(const std::shared_ptr<BootstrapLoad> &request) {
+    return bootstrap_load == request && load_state.load() == kLoadPending;
+}
+
+void pollBootstrap(std::uint64_t id);
+
+bool queueBootstrapPoll(std::uint64_t id) {
+    auto *director = cocos2d::Director::getInstance();
+    auto *scheduler = director ? director->getScheduler() : nullptr;
+    if(!scheduler) return false;
+    // The queue captures only an identity, so cancellation releases all script
+    // references before engine teardown even if this callback is never delivered.
+    scheduler->performFunctionInCocosThread([id] { pollBootstrap(id); });
+    return true;
+}
+
+void pollBootstrap(std::uint64_t id) {
+    auto request = bootstrap_load;
+    if(!request || request->id != id || !bootstrapIsCurrent(request)) return;
+    const auto fail = [&](int outcome) {
+        if(bootstrapIsCurrent(request)) {
+            load_state.store(outcome);
+            bootstrap_load.reset();
+        }
+    };
+    try {
+        tTJSVariant kag, method, trigger;
+        if(!findKagMethod(TJS_W("loadBookMark"), kag, method)) {
+            fail(kMethodUnavailable);
+            return;
+        }
+        if(!bootstrapIsCurrent(request)) return;
+        if(request->kag.Type() == tvtVoid) request->kag = kag;
+        if(request->kag.AsObjectNoAddRef() != kag.AsObjectNoAddRef()) {
+            fail(kBookmarkRejected);
+            return;
+        }
+        BootstrapWaitPoint point;
+        const auto action = inspectBootstrap(kag.AsObjectNoAddRef(), point, trigger);
+        if(!bootstrapIsCurrent(request)) return;
+        if(action == BootstrapAction::Ready) {
+            bootstrap_load.reset();
+            const int outcome = startKagLoad(request->slot);
+            if(outcome != kBookmarkSucceeded) load_state.store(outcome);
+            return;
+        }
+        if(action == BootstrapAction::Click) {
+            bool seen = request->acknowledged.size() >= kMaxBootstrapSignals;
+            for(const auto &previous : request->acknowledged) seen |= previous.matches(point);
+            if(!seen) {
+                // Record before invoking script; never retry a failed or reentrant signal.
+                request->acknowledged.push_back(point);
+                tTJSVariant result, signal(TJS_W("click"));
+                tTJSVariant *argument = &signal;
+                const auto status = trigger.AsObjectNoAddRef()->FuncCall(
+                    0, nullptr, nullptr, &result, 1, &argument, point.conductor.AsObjectNoAddRef());
+                if(!bootstrapIsCurrent(request)) return;
+                if(status != TJS_S_OK || result.Type() != tvtInteger || !result.operator bool()) {
+                    fail(kBookmarkRejected);
+                    return;
+                }
+                std::fprintf(stderr, "[bookmark] bootstrap click acknowledged (%zu/%zu)\n",
+                             request->acknowledged.size(), kMaxBootstrapSignals);
+            }
+        }
+        // No spinning, synthetic DOM input, menu choices, or timed-wait bypass:
+        // one standard waitclick signal at most, then let the next tick advance.
+        if(bootstrapIsCurrent(request) && !queueBootstrapPoll(id)) fail(kScriptUnavailable);
+    } catch(...) {
+        fail(kScriptException);
+    }
+}
+
 int scheduleKagLoad(tjs_int32 slot) noexcept {
     if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle())
         return kBookmarkRejected;
@@ -434,19 +598,17 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
     if(!load_state.compare_exchange_strong(expected, kLoadPending))
         return kLoadAlreadyRequested;
     try {
-        auto *director = cocos2d::Director::getInstance();
-        auto *scheduler = director ? director->getScheduler() : nullptr;
-        if(!scheduler) {
+        bootstrap_load = std::make_shared<BootstrapLoad>();
+        bootstrap_load->id = ++bootstrap_sequence;
+        bootstrap_load->slot = slot;
+        if(!queueBootstrapPoll(bootstrap_load->id)) {
+            bootstrap_load.reset();
             load_state.store(kScriptUnavailable);
             return kScriptUnavailable;
         }
-        scheduler->performFunctionInCocosThread([slot] {
-            if(load_state.load() != kLoadPending) return;
-            const int outcome = startKagLoad(slot);
-            if(outcome != kBookmarkSucceeded) load_state.store(outcome);
-        });
         return kBookmarkSucceeded;
     } catch(...) {
+        bootstrap_load.reset();
         load_state.store(kScriptException);
         return kScriptException;
     }
@@ -456,8 +618,8 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
     // Startup success is set only after startup.tjs / Initialize.tjs returns.
     // Loader availability is meaningful only between complete engine ticks.
-    // Script stable/save-label flags can require input during startup, so they
-    // belong to capture readiness, not to loading an existing bookmark.
+    // This query only reports whether a request can be queued. The queued
+    // coordinator advances standard startup barriers before invoking the loader.
     if(!TVPStartupSuccess || !krkr2_host_main_loop_is_idle()) return 0;
     try {
         tTJSVariant kag_value;
@@ -507,6 +669,7 @@ krkr2_host_load_bookmark_state() {
 
 // Stop calls this after the JSPI stack drains, while the TJS objects are alive.
 extern "C" EMSCRIPTEN_KEEPALIVE void krkr2_host_cancel_bookmark_load() {
-    pending_load.reset();
     if(load_state.load() == kLoadPending) load_state.store(kBookmarkRejected);
+    bootstrap_load.reset();
+    pending_load.reset();
 }
