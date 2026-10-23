@@ -71,9 +71,11 @@ struct iTJSDispatch2 {
     int callStatus = TJS_S_OK;
     int callResult = 1;
     std::function<void(tTJSVariant *, int, tTJSVariant **)> onCall;
+    std::function<void(const wchar_t *)> onGet;
     int PropGet(int, const wchar_t *name, void *, tTJSVariant *result,
                 iTJSDispatch2 *) {
         if(throws) throw std::runtime_error("script unavailable");
+        if(onGet) onGet(name);
         auto found = properties.find(name);
         if(found == properties.end()) return -1;
         *result = found->second;
@@ -92,9 +94,9 @@ struct iTJSDispatch2 {
                  tTJSVariant **arguments, iTJSDispatch2 *) {
         if(callException == 1) throw std::runtime_error("bookmark test failure");
         if(callException == 2) throw 7;
-        assert(count == 1);
+        assert(count == 0 || count == 1);
         ++calls;
-        slot = arguments[0]->integer;
+        slot = count ? arguments[0]->integer : -1;
         *result = tTJSVariant(callResult);
         if(onCall) onCall(result, count, arguments);
         return callStatus;
@@ -345,6 +347,161 @@ int main() {
         kag.properties[L"loadBookMark"] = tTJSVariant(&load);
         balanced();
     }
+
+    // A loader override can discard its base loader's return value. A void
+    // return is successful only with a causal, completed restoreFlags call
+    // inside this requested load; neither old stable state nor an unrelated
+    // restore before the request is evidence of this load succeeding.
+    iTJSDispatch2 restore;
+    restore.function = true;
+    kag.properties[L"restoreFlags"] = tTJSVariant(&restore);
+    const auto restoreNow = [&] {
+        const auto method = kag.properties.at(L"restoreFlags");
+        tTJSVariant result;
+        return method.AsObjectNoAddRef()->FuncCall(
+            0, nullptr, nullptr, &result, 0, nullptr, &kag);
+    };
+    load.onCall = [&](tTJSVariant *result, int, tTJSVariant **) {
+        assert(restoreNow() == TJS_S_OK);
+        *result = tTJSVariant();
+    };
+    request();
+    invoke(kag.properties.at(L"loadBookMark"), 1999);
+    assert(krkr2_host_load_bookmark_state() == kLoadSucceeded);
+    balanced();
+    assert(kag.properties.at(L"restoreFlags").AsObjectNoAddRef() == &restore);
+    assert(restore.references == 2);
+
+    // The same completion contract applies without a framework entry.
+    global.properties.erase(L"loadFunction");
+    request();
+    assert(krkr2_host_load_bookmark_state() == kLoadSucceeded);
+    balanced();
+    global.properties[L"loadFunction"] = tTJSVariant(&entry);
+
+    restoreNow();
+    load.onCall = [](tTJSVariant *result, int, tTJSVariant **) { *result = tTJSVariant(); };
+    request();
+    invoke(kag.properties.at(L"loadBookMark"), 1999);
+    assert(krkr2_host_load_bookmark_state() == kBookmarkRejected);
+    balanced();
+
+    for(int failure : {0, 1, 2, 3, 4, 5}) {
+        load.onCall = [&](tTJSVariant *result, int, tTJSVariant **) {
+            if(failure == 3) {
+                restore.callStatus = TJS_E_FAIL;
+                assert(restoreNow() == TJS_E_FAIL);
+                restore.callStatus = TJS_S_OK;
+            } else if(failure == 4) {
+                restore.callResult = 0;
+                assert(restoreNow() == TJS_S_OK);
+                restore.callResult = 1;
+            } else if(failure == 5) {
+                restore.callException = 1;
+                try { restoreNow(); assert(false); } catch(const std::exception &) {}
+                restore.callException = 0;
+            } else {
+                assert(restoreNow() == TJS_S_OK);
+            }
+            assert(krkr2_host_load_bookmark_state() == kLoadPending);
+            if(failure == 1) throw std::runtime_error("failure after restore");
+            *result = failure == 0 ? tTJSVariant(0) :
+                failure == 5 ? tTJSVariant(1) : tTJSVariant();
+            if(failure == 2) kag.properties[L"restoreFlags"] = tTJSVariant(&replacement);
+        };
+        request();
+        try { invoke(kag.properties.at(L"loadBookMark"), 1999); assert(failure != 1); }
+        catch(...) { assert(failure == 1); }
+        assert(krkr2_host_load_bookmark_state() ==
+            (failure == 1 ? kScriptException : failure == 2 ? kLoadSucceeded : kBookmarkRejected));
+        if(failure == 2) {
+            assert(kag.properties.at(L"restoreFlags").AsObjectNoAddRef() == &replacement);
+            kag.properties[L"restoreFlags"] = tTJSVariant(&restore);
+        }
+        balanced();
+        assert(kag.properties.at(L"restoreFlags").AsObjectNoAddRef() == &restore);
+        assert(restore.references == 2);
+    }
+    tTJSVariant retainedRestore;
+    load.onCall = [&](tTJSVariant *result, int, tTJSVariant **) {
+        retainedRestore = kag.properties.at(L"restoreFlags");
+        assert(restoreNow() == TJS_S_OK);
+        *result = tTJSVariant();
+    };
+    request();
+    invoke(kag.properties.at(L"loadBookMark"), 1999);
+    assert(krkr2_host_load_bookmark_state() == kLoadSucceeded);
+    assert(!pending_load && kag.references == receiverReferences);
+    assert(liveDispatches == 1);
+    {
+        tTJSVariant result;
+        load_state.store(kBookmarkRejected);
+        assert(retainedRestore.AsObjectNoAddRef()->FuncCall(
+            0, nullptr, nullptr, &result, 0, nullptr, &kag) == TJS_S_OK);
+        assert(krkr2_host_load_bookmark_state() == kBookmarkRejected);
+    }
+    retainedRestore = tTJSVariant();
+    balanced();
+
+    load.onCall = [&](tTJSVariant *result, int, tTJSVariant **) {
+        assert(restoreNow() == TJS_S_OK);
+        kag.setStatus = TJS_E_FAIL; // Fail removal after a completed restore.
+        *result = tTJSVariant();
+    };
+    request();
+    assert(invoke(kag.properties.at(L"loadBookMark"), 1999) == TJS_E_FAIL);
+    assert(krkr2_host_load_bookmark_state() == kMethodUnavailable);
+    assert(!pending_load && kag.references == receiverReferences);
+    assert(liveDispatches == 1); // Leftover callback holds no receiver cycle.
+    kag.setStatus = TJS_S_OK;
+    kag.properties[L"restoreFlags"] = tTJSVariant(&restore);
+    balanced();
+    load.onCall = {};
+
+    // A retained loader invoked with another receiver is only a passthrough.
+    // It cannot consume the matching pending request or dereference null.
+    iTJSDispatch2 anotherKag;
+    for(auto receiver : {&anotherKag, static_cast<iTJSDispatch2 *>(nullptr)}) {
+        request();
+        const auto callback = kag.properties.at(L"loadBookMark");
+        tTJSVariant argument(1999), result;
+        tTJSVariant *params = &argument;
+        assert(callback.AsObjectNoAddRef()->FuncCall(
+            0, nullptr, nullptr, &result, 1, &params, receiver) == TJS_S_OK);
+        assert(krkr2_host_load_bookmark_state() == kLoadPending);
+        invoke(callback, 1999);
+        assert(krkr2_host_load_bookmark_state() == kLoadSucceeded);
+    }
+    balanced();
+
+    // Neither another receiver nor a property getter running during removal
+    // may supply a witness outside the original loader's target/call scope.
+    for(bool duringRemoval : {false, true}) {
+        load.onCall = [&](tTJSVariant *result, int, tTJSVariant **) {
+            retainedRestore = kag.properties.at(L"restoreFlags");
+            if(!duringRemoval) {
+                tTJSVariant unused;
+                retainedRestore.AsObjectNoAddRef()->FuncCall(
+                    0, nullptr, nullptr, &unused, 0, nullptr, &anotherKag);
+            }
+            *result = tTJSVariant();
+        };
+        kag.onGet = [&](const wchar_t *name) {
+            if(duringRemoval && std::wstring(name) == L"restoreFlags" &&
+               retainedRestore.Type() == tvtObject) {
+                tTJSVariant unused;
+                retainedRestore.AsObjectNoAddRef()->FuncCall(
+                    0, nullptr, nullptr, &unused, 0, nullptr, &kag);
+            }
+        };
+        request();
+        invoke(kag.properties.at(L"loadBookMark"), 1999);
+        assert(krkr2_host_load_bookmark_state() == kBookmarkRejected);
+        kag.onGet = {};
+        retainedRestore = tTJSVariant();
+        balanced();
+    }
+    load.onCall = {};
 
     // GetGlobal returns an owned reference, including when property lookup
     // fails or throws. Polling and save/load calls must release every lookup.

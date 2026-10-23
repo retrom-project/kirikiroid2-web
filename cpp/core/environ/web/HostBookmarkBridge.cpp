@@ -92,6 +92,156 @@ bool kagReachedSavePoint(const tTJSVariant &kag_value) {
     return label && label->GetLength() > 0;
 }
 
+struct ReleaseDispatch {
+    void operator()(iTJSDispatch2 *value) const { if(value) value->Release(); }
+};
+using OwnedDispatch = std::unique_ptr<iTJSDispatch2, ReleaseDispatch>;
+iTJSDispatch2 *retainDispatch(iTJSDispatch2 *value) {
+    value->AddRef();
+    return value;
+}
+
+// Some KAG overrides discard loadBookMarkFromFile's return value. Observe a
+// completed restoreFlags within the requested loader call, rather than treating
+// every void result (or a previously stable title screen) as a successful load.
+enum class RestoreOutcome { None, Completed, Failed };
+
+class RestoreFlagsObserver final : public tTJSDispatch {
+    tTJSVariant method_;
+    bool completed_ = false;
+    bool failed_ = false;
+    iTJSDispatch2 *receiver_ = nullptr; // Compared only while the caller owns it.
+
+public:
+    explicit RestoreFlagsObserver(const tTJSVariant &method)
+        : method_(method.AsObjectNoAddRef(), nullptr) {}
+
+    void activate(iTJSDispatch2 *receiver) { receiver_ = receiver; }
+    void deactivate() { receiver_ = nullptr; }
+
+    RestoreOutcome outcome() const {
+        return failed_ ? RestoreOutcome::Failed :
+            completed_ ? RestoreOutcome::Completed : RestoreOutcome::None;
+    }
+
+    tjs_error IsInstanceOf(tjs_uint32, const tjs_char *, tjs_uint32 *,
+                          const tjs_char *name, iTJSDispatch2 *) override {
+        return ttstr(name) == TJS_W("Function") ? TJS_S_TRUE : TJS_S_FALSE;
+    }
+
+    tjs_error FuncCall(tjs_uint32 flag, const tjs_char *name, tjs_uint32 *hint,
+                      tTJSVariant *result, tjs_int count, tTJSVariant **params,
+                      iTJSDispatch2 *objthis) override {
+        AddRef();
+        OwnedDispatch self(this);
+        const bool requested = receiver_ && objthis == receiver_;
+        try {
+            tTJSVariant local_result;
+            if(!result) result = &local_result;
+            const auto status = method_.AsObjectNoAddRef()->FuncCall(
+                flag, name, hint, result, count, params, objthis);
+            if(requested && receiver_ == objthis) {
+                if(status == TJS_S_OK && (result->Type() == tvtVoid || result->operator bool()))
+                    completed_ = true;
+                else failed_ = true;
+            }
+            return status;
+        } catch(...) {
+            if(requested && receiver_ == objthis) failed_ = true;
+            throw;
+        }
+    }
+};
+
+class ScopedRestoreWatch final {
+    iTJSDispatch2 *kag_;
+    tTJSVariant original_;
+    OwnedDispatch observer_;
+    bool detached_ = false;
+
+public:
+    explicit ScopedRestoreWatch(iTJSDispatch2 *kag) : kag_(kag) {}
+
+    bool install() {
+        if(kag_->PropGet(0, TJS_W("restoreFlags"), nullptr, &original_, kag_) != TJS_S_OK ||
+           original_.Type() != tvtObject || !original_.AsObjectNoAddRef() ||
+           original_.AsObjectNoAddRef()->IsInstanceOf(
+               0, nullptr, nullptr, TJS_W("Function"), kag_) != TJS_S_TRUE)
+            return true; // An absent method supplies no completion witness.
+        observer_.reset(new RestoreFlagsObserver(original_));
+        const tTJSVariant callback(observer_.get(), nullptr);
+        return kag_->PropSet(TJS_MEMBERENSURE, TJS_W("restoreFlags"), nullptr,
+                             &callback, kag_) == TJS_S_OK;
+    }
+
+    RestoreOutcome outcome() const {
+        return observer_ ? static_cast<RestoreFlagsObserver *>(observer_.get())->outcome()
+                         : RestoreOutcome::None;
+    }
+
+    void activate() {
+        if(observer_) static_cast<RestoreFlagsObserver *>(observer_.get())->activate(kag_);
+    }
+
+    void deactivate() {
+        if(observer_) static_cast<RestoreFlagsObserver *>(observer_.get())->deactivate();
+    }
+
+    bool detach() noexcept {
+        if(!observer_ || detached_) return true;
+        try {
+            tTJSVariant current;
+            if(kag_->PropGet(0, TJS_W("restoreFlags"), nullptr, &current, kag_) != TJS_S_OK)
+                return false;
+            // Keep replacements installed by the script, including on failure.
+            if(current.Type() != tvtObject || current.AsObjectNoAddRef() != observer_.get())
+                return detached_ = true;
+            detached_ = kag_->PropSet(TJS_MEMBERENSURE, TJS_W("restoreFlags"), nullptr,
+                                     &original_, kag_) == TJS_S_OK;
+            return detached_;
+        } catch(...) {
+            return false;
+        }
+    }
+
+    ~ScopedRestoreWatch() {
+        deactivate();
+        if(!detach()) std::fprintf(stderr, "[bookmark] cannot detach restore observer\n");
+    }
+};
+
+tjs_error invokeBookmarkLoad(const tTJSVariant &method, tjs_uint32 flag,
+                            const tjs_char *name, tjs_uint32 *hint,
+                            tTJSVariant *result, tjs_int count,
+                            tTJSVariant **params, iTJSDispatch2 *kag,
+                            RestoreOutcome &restored) {
+    ScopedRestoreWatch watch(kag);
+    if(!watch.install()) return TJS_E_FAIL;
+    watch.activate();
+    tjs_error status;
+    try {
+        status = method.AsObjectNoAddRef()->FuncCall(
+            flag, name, hint, result, count, params, kag);
+    } catch(...) {
+        watch.deactivate();
+        throw;
+    }
+    watch.deactivate();
+    // The loader can still fail after restoreFlags. Publish no result before
+    // the entire original call has returned and the temporary hook is removed.
+    if(!watch.detach()) return TJS_E_FAIL;
+    restored = watch.outcome();
+    return status;
+}
+
+int bookmarkLoadOutcome(tjs_error status, const tTJSVariant &result, RestoreOutcome restored) {
+    if(status != TJS_S_OK) return kMethodUnavailable;
+    if(restored == RestoreOutcome::Failed) return kBookmarkRejected;
+    if(result.Type() == tvtVoid)
+        return restored == RestoreOutcome::Completed ? kLoadSucceeded : kBookmarkRejected;
+    return result.operator bool() ? kLoadSucceeded : kBookmarkRejected;
+}
+
 int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept {
     try {
         ScriptDispatch script;
@@ -111,8 +261,14 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept
         tTJSVariant result;
         tTJSVariant slot_value(slot);
         tTJSVariant *arguments = &slot_value;
-        if(method->FuncCall(0, nullptr, nullptr, &result, 1, &arguments, kag) !=
-           TJS_S_OK) {
+        if(!capture) {
+            RestoreOutcome restored = RestoreOutcome::None;
+            const auto status = invokeBookmarkLoad(method_value, 0, nullptr, nullptr,
+                &result, 1, &arguments, kag, restored);
+            const auto outcome = bookmarkLoadOutcome(status, result, restored);
+            return outcome == kLoadSucceeded ? kBookmarkSucceeded : outcome;
+        }
+        if(method->FuncCall(0, nullptr, nullptr, &result, 1, &arguments, kag) != TJS_S_OK) {
             return kMethodUnavailable;
         }
         return result.operator bool() ? kBookmarkSucceeded
@@ -124,15 +280,6 @@ int callKagBookmark(const tjs_char *name, tjs_int32 slot, bool capture) noexcept
         std::fprintf(stderr, "[bookmark] unknown script exception\n");
         return kScriptException;
     }
-}
-
-struct ReleaseDispatch {
-    void operator()(iTJSDispatch2 *value) const { if(value) value->Release(); }
-};
-using OwnedDispatch = std::unique_ptr<iTJSDispatch2, ReleaseDispatch>;
-iTJSDispatch2 *retainDispatch(iTJSDispatch2 *value) {
-    value->AddRef();
-    return value;
 }
 
 // Explicit ownership covers an asynchronous framework load. The observer holds
@@ -189,7 +336,8 @@ public:
         AddRef();
         OwnedDispatch self(this);
         const bool requested = pending_load &&
-            pending_load->observer.get() == this && count >= 1 && params &&
+            pending_load->observer.get() == this &&
+            pending_load->kag.get() == objthis && count >= 1 && params &&
             params[0] && params[0]->Type() == tvtInteger &&
             static_cast<tjs_int32>(*params[0]) == slot_;
         auto owner = requested ? std::move(pending_load) : nullptr;
@@ -200,11 +348,14 @@ public:
         try {
             tTJSVariant local_result;
             if(!result) result = &local_result;
-            const auto status = method_.AsObjectNoAddRef()->FuncCall(
-                flag, name, hint, result, count, params, objthis);
+            RestoreOutcome restored = RestoreOutcome::None;
+            const auto status = owner
+                ? invokeBookmarkLoad(method_, flag, name, hint, result, count,
+                                     params, objthis, restored)
+                : method_.AsObjectNoAddRef()->FuncCall(
+                    flag, name, hint, result, count, params, objthis);
             if(owner) {
-                load_state.store(status != TJS_S_OK ? kMethodUnavailable :
-                    result->operator bool() ? kLoadSucceeded : kBookmarkRejected);
+                load_state.store(bookmarkLoadOutcome(status, *result, restored));
             }
             return status;
         } catch(const std::exception &error) {
