@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Offline CxFilterFS/eliF -> ordinary XP3, inside a new STORE ZIP.
+"""Package a game using the same host normalize-content implementation as online import.
 
-This is an explicit format converter, not a runtime filter or game detector.
-It never executes the input EXE, TPM, DLL, or scripts. Python standard library only.
+Python owns only ZIP reception, file facts, verification and STORE publication.
+Format probes, name mapping and resource decoding run in the explicit runtime tool.
+No game executable, DLL, TPM or script is executed.
 """
 import argparse
-from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
-import re
+import shutil
 import stat
-import struct
+import subprocess
 import sys
 import tempfile
 import zipfile
-import zlib
 
-MAGIC = bytes.fromhex('5850330d0a200a1a8b6701')
 BUFFER = 1024 * 1024
-MAX_INDEX = 32 * BUFFER
+MAX_FILE = 8 * 1024 ** 3
+MAX_TREE = 64 * 1024 ** 3
+MAX_MESSAGE = 64 * 1024 ** 2
 
 
 class FormatError(ValueError):
@@ -32,380 +32,189 @@ def require(condition, message):
         raise FormatError(message)
 
 
-def normalize(name):
-    # CxFilterFS folds ASCII only; Unicode lower()/casefold() changes other names.
-    name = ''.join(chr(ord(c) + 32) if 'A' <= c <= 'Z' else c for c in name)
-    return re.sub('/+', '/', name.replace('\\', '/')).lstrip('/')
-
-
 def safe_path(name):
-    require(name and '\x00' not in name and '\\' not in name
-            and not name.startswith('/') and ':' not in name
-            and all(p not in ('', '.', '..') for p in name.rstrip('/').split('/')),
-            f'unsafe virtual path: {name!r}')
-
-
-def filter_key(h):
-    t = h ^ 0x1548E29C
-    return ((t ^ (t >> 8) ^ (t >> 16) ^ (t >> 24)) & 255) or 0xD7
+    require(isinstance(name, str) and 0 < len(name) <= 4096
+            and not name.startswith('/') and ':' not in name and "\\" not in name
+            and all(ord(c) >= 32 and ord(c) != 127 for c in name)
+            and all(part not in ('', '.', '..') for part in name.split('/')),
+            'unsafe logical path')
 
 
 def sha256_file(path):
-    with path.open('rb') as f:
-        return hashlib.file_digest(f, 'sha256').hexdigest()
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
-class Slice:
-    def __init__(self, file, start, size):
-        self.file, self.start, self.size = file, start, size
-
-    def read(self, offset, size):
-        require(0 <= offset <= self.size and 0 <= size <= self.size - offset,
-                'XP3 read outside ZIP member')
-        self.file.seek(self.start + offset)
-        data = self.file.read(size)
-        require(len(data) == size, 'short source read')
-        return data
-
-
-def zip_slice(file, info):
-    require(info.compress_type == zipfile.ZIP_STORED and not info.flag_bits & 1,
-            f'input must be an unencrypted STORE ZIP: {info.filename}')
-    file.seek(info.header_offset)
-    header = file.read(30)
-    require(len(header) == 30 and header[:4] == b'PK\x03\x04', 'invalid ZIP local header')
-    flags, method = struct.unpack_from('<HH', header, 6)
-    n, extra = struct.unpack_from('<HH', header, 26)
-    require(method == info.compress_type and flags == info.flag_bits,
-            'ZIP local/central header mismatch')
-    encoding = 'utf-8' if flags & 0x800 else 'cp437'
-    require(file.read(n).decode(encoding) == info.orig_filename, 'ZIP local name mismatch')
-    return Slice(file, info.header_offset + 30 + n + extra, info.file_size)
-
-
-def chunks(data):
-    at = 0
-    while at < len(data):
-        require(at + 12 <= len(data), 'short XP3 chunk header')
-        tag, size = struct.unpack_from('<4sQ', data, at)
-        at += 12
-        require(size <= len(data) - at, 'XP3 chunk out of bounds')
-        yield tag, data[at:at + size]
-        at += size
-
-
-def index_blocks(source):
-    require(source.read(0, 11) == MAGIC, 'unsupported XP3 signature')
-    offset = struct.unpack('<Q', source.read(11, 8))[0]
-    visited, total = set(), 0
-    for _ in range(16):
-        require(offset not in visited, 'XP3 index cycle')
-        visited.add(offset)
-        flag = source.read(offset, 1)[0]
-        require(flag & ~0x81 == 0, 'unsupported XP3 index flags')
-        at = offset + 1
-        if flag & 1:
-            packed, size = struct.unpack('<QQ', source.read(at, 16))
-            at += 16
-            require(packed <= MAX_INDEX and size <= MAX_INDEX - total, 'XP3 index limit')
-            decoder = zlib.decompressobj()
-            data = decoder.decompress(source.read(at, packed), size + 1)
-            require(len(data) == size and decoder.eof and not decoder.unconsumed_tail
-                    and not decoder.unused_data, 'invalid compressed XP3 index')
-            at += packed
-        else:
-            size = struct.unpack('<Q', source.read(at, 8))[0]
-            at += 8
-            require(size <= MAX_INDEX - total, 'XP3 index limit')
-            data = source.read(at, size)
-            at += size
-        total += size
-        yield data
-        if not flag & 0x80:
-            return
-        offset = struct.unpack('<Q', source.read(at, 8))[0]
-    raise FormatError('XP3 index chain limit')
-
-
-def utf16_field(data, offset, count):
-    require(0 < count <= 32767 and offset + count * 2 <= len(data), 'invalid UTF-16 name length')
-    end = offset + count * 2
-    require(data[end:] in (b'', b'\0\0'), 'unknown bytes following XP3 name')
-    name = data[offset:end].decode('utf-16-le', errors='strict')
-    require('\0' not in name, 'embedded NUL in XP3 name')
-    return name
-
-
-@dataclass
-class Entry:
-    physical: str
-    flags: int
-    declared_size: int
-    packed_size: int
-    segments: list
-    adler: int
-    timestamp: bytes | None
-    name: str = ''
-    h: int = 0
-
-    @property
-    def readable_size(self):
-        return sum(s[2] for s in self.segments)
-
-
-def read_entries(source):
-    files, mappings = {}, {}
-    for block in index_blocks(source):
-        for tag, data in chunks(block):
-            if tag == b'eliF':
-                require(len(data) >= 6, 'short eliF')
-                h, count = struct.unpack_from('<IH', data)
-                name = normalize(utf16_field(data, 6, count))
-                safe_path(name)
-                require(not name.endswith('/'), 'directory presented as an eliF file')
-                require(name not in mappings, f'duplicate logical name: {name}')
-                mappings[name] = h
-            elif tag == b'File':
-                fields = {}
-                for key, value in chunks(data):
-                    require(key in (b'info', b'segm', b'adlr', b'time') and key not in fields,
-                            f'unsupported or duplicate File field: {key!r}')
-                    fields[key] = value
-                require({b'info', b'segm', b'adlr'} <= fields.keys(), 'incomplete File')
-                info, segm = fields[b'info'], fields[b'segm']
-                require(len(info) >= 22 and len(segm) > 0 and len(segm) % 28 == 0
-                        and len(fields[b'adlr']) == 4, 'invalid File field size')
-                flags, size, packed, count = struct.unpack_from('<IQQH', info)
-                physical = utf16_field(info, 22, count)
-                require(re.fullmatch('[0-9a-f]{32}', physical) is not None,
-                        'CxFilterFS input requires MD5 physical names')
-                require(physical not in files, 'duplicate physical name')
-                require(flags in (0, 0x80000000), 'unsupported File flags')
-                segments = list(struct.iter_unpack('<IQQQ', segm))
-                for mode, offset, original, stored in segments:
-                    require(mode in (0, 1), 'unsupported segment mode')
-                    require(mode == 1 or original == stored, 'raw segment size mismatch')
-                    require(offset <= source.size and stored <= source.size - offset,
-                            'segment outside XP3')
-                timestamp = fields.get(b'time')
-                require(timestamp is None or len(timestamp) == 8, 'invalid timestamp')
-                files[physical] = Entry(physical, flags, size, packed, segments,
-                                        struct.unpack('<I', fields[b'adlr'])[0], timestamp)
-            else:
-                raise FormatError(f'unsupported index chunk {tag!r}; not this format')
-    require(files and len(files) == len(mappings), 'missing or incomplete eliF mapping')
-    linked = set()
-    for name, h in mappings.items():
-        physical = hashlib.md5(name.encode('utf-16-le')).hexdigest()
-        require(physical in files and physical not in linked, 'eliF/physical mapping mismatch')
-        entry = files[physical]
-        entry.name, entry.h = name, h
-        linked.add(physical)
-    return list(files.values())
-
-
-def segment_bytes(source, segment):
-    mode, offset, expanded, packed = segment
-    decoder = zlib.decompressobj() if mode else None
-    produced = 0
-    for at in range(0, packed, BUFFER):
-        pending = source.read(offset + at, min(BUFFER, packed - at))
-        while pending:
-            if decoder:
-                block = decoder.decompress(pending, BUFFER)
-                pending = decoder.unconsumed_tail
-            else:
-                block, pending = pending, b''
-            produced += len(block)
-            require(produced <= expanded, 'segment expands beyond declared size')
-            if block:
-                yield block
-    require(produced == expanded, 'segment expanded size mismatch')
-    require(not decoder or (decoder.eof and not decoder.unused_data), 'incomplete zlib segment')
-
-
-def chunk(tag, value):
-    return struct.pack('<4sQ', tag, len(value)) + value
-
-
-def convert_archive(source, entries, target, policy):
-    records, audit = [], []
-    target.write(MAGIC + b'\0' * 8)
-    for entry in entries:
-        short = entry.readable_size != entry.declared_size
-        require(not short or (policy == 'native-filtered-short-stream'
-                              and entry.readable_size < entry.declared_size),
-                f'inconsistent entry size: {entry.name}')
-        offset, count, adler = target.tell(), 0, 1
-        raw_hash, decoded_hash = hashlib.sha256(), hashlib.sha256()
-        key = filter_key(entry.h)
-        table = bytes(b ^ key for b in range(256))
-        for segment in entry.segments:
-            for raw in segment_bytes(source, segment):
-                # Native CxFilterFS applies this even when File.flags == 0.
-                decoded = raw.translate(table)
-                raw_hash.update(raw)
-                decoded_hash.update(decoded)
-                target.write(decoded)
-                count += len(decoded)
-                adler = zlib.adler32(decoded, adler)
-        adler &= 0xffffffff
-        require(short or (adler == entry.adler == entry.h),
-                f'decoded Adler32 mismatch: {entry.name}')
-        encoded_name = entry.name.encode('utf-16-le')
-        fields = chunk(b'info', struct.pack('<IQQH', 0, count, count,
-                                            len(encoded_name) // 2) + encoded_name)
-        fields += chunk(b'segm', struct.pack('<IQQQ', 0, offset, count, count))
-        fields += chunk(b'adlr', struct.pack('<I', adler))
-        if entry.timestamp is not None:
-            fields += chunk(b'time', entry.timestamp)
-        records.append(chunk(b'File', fields))
-        audit.append({'name': entry.name, 'physicalName': entry.physical,
-                      'status': 'native-filtered-short-stream' if short else 'decoded-verified',
-                      'sourceFlags': entry.flags, 'sourceDeclaredSize': entry.declared_size,
-                      'sourcePackedSize': entry.packed_size, 'sourceSegments': entry.segments,
-                      'sourceAdler32': entry.adler, 'eliFHash': entry.h, 'key': key,
-                      'readableSize': count, 'outputAdler32': adler,
-                      'rawStreamSha256': raw_hash.hexdigest(),
-                      'decodedSha256': decoded_hash.hexdigest(),
-                      'sourceIntegrityVerified': not short,
-                      'metadataCorrected': short, 'transformApplied': True})
-    index_offset = target.tell()
-    index = b''.join(records)
-    require(len(index) <= MAX_INDEX, 'output index exceeds limit')
-    target.write(b'\0' + struct.pack('<Q', len(index)) + index)
-    target.seek(11)
-    target.write(struct.pack('<Q', index_offset))
-    target.flush()
-    return audit
-
-
-def standardize(source_path, output_path, report_path, report, policy):
-    require(source_path.resolve() != output_path.resolve(), 'input and output must differ')
-    require(not output_path.exists(), 'output exists; refusing to overwrite')
-    require(output_path.parent.is_dir(), 'output parent must exist')
-    identity = source_path.stat()
-    report.update(format='cxfilterfs-elif-tinyxor-v1', policy=policy,
-                  source=str(source_path.resolve()), sourceSize=identity.st_size,
-                  archives=[], copiedMembers=[])
-    with source_path.open('rb') as raw, zipfile.ZipFile(source_path) as archive:
-        plans, seen = [], set()
+def receive(source_path, root):
+    files, locators, seen, total = [], {}, set(), 0
+    with zipfile.ZipFile(source_path) as archive:
         for info in archive.infolist():
-            safe_path(info.filename)
-            require(info.filename not in seen, 'duplicate outer ZIP member')
+            name = info.filename.rstrip('/') if info.is_dir() else info.filename
+            safe_path(name)
+            require(info.filename not in seen, 'duplicate ZIP member')
             seen.add(info.filename)
             mode = (info.external_attr >> 16) & 0xffff
-            require(not stat.S_ISLNK(mode), 'ZIP symlinks unsupported')
-            member = zip_slice(raw, info)
-            require(Path(info.filename).name.lower() != 'xp3filter.tjs',
-                    'additional loose xp3filter.tjs requires separate analysis')
-            entries = read_entries(member) if info.filename.lower().endswith('.xp3') else None
-            if entries is not None:
-                require(all(Path(e.name).name != 'xp3filter.tjs' for e in entries),
-                        'additional embedded xp3filter.tjs requires separate analysis')
-                for entry in entries:
-                    packed = sum(s[3] for s in entry.segments)
-                    require((entry.readable_size == entry.declared_size
-                             and packed == entry.packed_size) or
-                            (policy == 'native-filtered-short-stream'
-                             and entry.readable_size < entry.declared_size
-                             and packed <= entry.packed_size),
-                            f'{info.filename}: inconsistent entry size: {entry.name}')
-            plans.append((info, member, entries))
-        require(any(p[2] is not None for p in plans), 'no CxFilterFS archives')
-        report['sourceSha256'] = sha256_file(source_path)
-        with tempfile.TemporaryDirectory(prefix='.xp3-standardize-', dir=output_path.parent) as tmp:
-            tmp = Path(tmp)
-            candidate = tmp / 'candidate.zip'
-            with zipfile.ZipFile(candidate, 'w', compression=zipfile.ZIP_STORED, allowZip64=True) as out:
-                for info, member, entries in plans:
-                    if entries is not None:
-                        with (tmp / 'archive.xp3').open('w+b') as target:
-                            items = convert_archive(member, entries, target, policy)
-                        out.write(tmp / 'archive.xp3', info.filename, compress_type=zipfile.ZIP_STORED)
-                        (tmp / 'archive.xp3').unlink()
-                        report['archives'].append({'name': info.filename, 'entries': items})
-                        print(f'{info.filename}: {len(items)} entries', file=sys.stderr, flush=True)
-                    else:
-                        digest = hashlib.sha256()
-                        # Reading via ZipFile also checks the original member CRC.
-                        with archive.open(info) as src, out.open(info, 'w', force_zip64=True) as dst:
-                            while data := src.read(BUFFER):
-                                digest.update(data)
-                                dst.write(data)
-                        report['copiedMembers'].append({'name': info.filename,
-                                                        'sha256': digest.hexdigest(), 'size': info.file_size})
-            require(sha256_file(source_path) == report['sourceSha256']
-                    and source_path.stat().st_size == identity.st_size,
-                    'source changed during conversion')
-            report.update(output=str(output_path.resolve()), outputSize=candidate.stat().st_size,
-                          outputSha256=sha256_file(candidate), sourceUnchanged=True)
-            items = [e for a in report['archives'] for e in a['entries']]
-            report.update(status='converted-with-anomalies'
-                          if any(e['metadataCorrected'] for e in items) else 'converted',
-                          verifiedEntries=sum(e['sourceIntegrityVerified'] for e in items),
-                          anomalousEntries=sum(e['metadataCorrected'] for e in items))
-            staged_report = tmp / 'conversion.json'
-            with staged_report.open('x', encoding='utf-8') as f:
-                json.dump(report, f, ensure_ascii=False, indent=2)
-                f.write('\n')
-                f.flush()
-                os.fsync(f.fileno())
-            with candidate.open('rb') as f:
-                os.fsync(f.fileno())
-            # Publish the audit first: a visible ZIP must always have its exception manifest.
-            # No replace(): concurrent files must never be overwritten or removed.
-            os.link(staged_report, report_path)
+            require(not stat.S_ISLNK(mode) and not info.flag_bits & 1,
+                    'ZIP symlinks and encrypted members unsupported')
+            if info.is_dir():
+                continue
+            require(info.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                    and 0 <= info.file_size <= MAX_FILE, 'unsupported ZIP method or size')
+            total += info.file_size
+            require(total <= MAX_TREE and len(files) < 100000, 'game reception limit')
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            digest, count = hashlib.sha256(), 0
+            # ZipFile also verifies the original member CRC at EOF.
+            with archive.open(info) as src, target.open('xb') as dst:
+                while data := src.read(BUFFER):
+                    count += len(data)
+                    require(count <= info.file_size, 'ZIP expanded size mismatch')
+                    dst.write(data)
+                    digest.update(data)
+            require(count == info.file_size, 'ZIP truncated member')
+            files.append(dict(logicalKey=name, name=name, sizeBytes=count, sha256=digest.hexdigest()))
+            locators[name] = dict(path=str(target), offset=0, sizeBytes=count)
+    require(files, 'empty game')
+    files.sort(key=lambda file: file['logicalKey'].encode('utf-8'))
+    return files, locators
+
+
+def normalize(args, files, locators, output_root):
+    request = json.dumps(dict(platformId=args.platform, files=files, locators=locators,
+                              outputRoot=str(output_root)), ensure_ascii=False).encode('utf-8')
+    require(len(request) <= MAX_MESSAGE, 'runtime request limit')
+    process = subprocess.Popen([args.node, str(args.runtime_tool), 'normalize-content'],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        output, _ = process.communicate(request, timeout=60 * 60)
+    except BaseException:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise
+    require(len(output) <= MAX_MESSAGE, 'runtime response limit')
+    response = json.loads(output)
+    require(process.returncode == 0 and 'error' not in response,
+            response.get('error', 'runtime normalization failed'))
+    require(isinstance(response.get('files'), list) and response['files'], 'invalid normalized manifest')
+    return response
+
+
+def write_package(target, response, originals, converted_root):
+    seen, total = set(), 0
+    with zipfile.ZipFile(target, 'x', compression=zipfile.ZIP_STORED, allowZip64=True) as package:
+        for file in sorted(response['files'], key=lambda item: item['logicalKey'].encode('utf-8')):
+            name = file['logicalKey']
+            safe_path(name)
+            require(name not in seen and len(seen) < 100000, 'duplicate output file')
+            seen.add(name)
+            require(type(file['sizeBytes']) is int and 0 <= file['sizeBytes'] <= MAX_FILE,
+                    'invalid output size')
+            total += file['sizeBytes']
+            require(total <= MAX_TREE, 'output reception limit')
+            if file.get('path'):
+                path = Path(file['path'])
+                require(path == converted_root / name and path.resolve() == path
+                        and path.is_file() and not path.is_symlink(), 'output outside owned staging')
+            else:
+                require(name in originals, 'unknown unchanged output')
+                original, path = originals[name]
+                require(all(file[key] == original[key] for key in ('sizeBytes', 'sha256')),
+                        'unchanged file facts differ')
+            entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.compress_type = zipfile.ZIP_STORED
+            entry.external_attr = (stat.S_IFREG | 0o600) << 16
+            digest, count = hashlib.sha256(), 0
+            with path.open('rb') as src, package.open(entry, 'w', force_zip64=True) as dst:
+                while data := src.read(BUFFER):
+                    count += len(data)
+                    require(count <= file['sizeBytes'], 'normalized output grew')
+                    digest.update(data)
+                    dst.write(data)
+            require(count == file['sizeBytes'] and digest.hexdigest() == file['sha256'],
+                    'normalized output content changed')
+
+
+def fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def standardize(args):
+    require(args.source != args.output and args.report not in (args.source, args.output),
+            'source, output and report must differ')
+    require(not args.output.exists() and not args.report.exists(), 'output or report already exists')
+    require(args.output.parent.is_dir() and args.report.parent.is_dir(), 'output parents must exist')
+    require(args.report.parent.stat().st_dev == args.output.parent.stat().st_dev,
+            'report and output require the same filesystem')
+    source_sha = sha256_file(args.source)
+    with tempfile.TemporaryDirectory(prefix='.normalize-content-', dir=args.output.parent) as temporary:
+        root = Path(temporary)
+        received, converted = root / 'received', root / 'converted'
+        received.mkdir(mode=0o700)
+        files, locators = receive(args.source, received)
+        response = normalize(args, files, locators, converted)
+        candidate, staged_report = root / 'candidate.zip', root / 'conversion.json'
+        originals = {file['logicalKey']: (file, Path(locators[file['logicalKey']]['path'])) for file in files}
+        write_package(candidate, response, originals, converted)
+        require(sha256_file(args.source) == source_sha, 'source changed during conversion')
+        report = dict(status='normalized' if response.get('normalization') else 'unchanged',
+                      sourceSha256=source_sha, sourceUnchanged=True,
+                      outputSha256=sha256_file(candidate), outputSize=candidate.stat().st_size,
+                      normalization=response.get('normalization'),
+                      files=[{key: file[key] for key in ('logicalKey', 'sizeBytes', 'sha256')}
+                             for file in response['files']])
+        with staged_report.open('x', encoding='utf-8') as destination:
+            json.dump(report, destination, ensure_ascii=False, indent=2)
+            destination.write('\n')
+            destination.flush()
+            os.fsync(destination.fileno())
+        with candidate.open('rb') as source:
+            os.fsync(source.fileno())
+        # Publish the report first and never overwrite concurrent files.
+        os.link(staged_report, args.report)
+        try:
+            fsync_directory(args.report.parent)
+            os.link(candidate, args.output)
+        except OSError:
             try:
-                directory = os.open(report_path.parent, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
-                os.link(candidate, output_path)
+                published, staged = args.report.lstat(), staged_report.stat()
+                if (stat.S_ISREG(published.st_mode) and
+                        (published.st_dev, published.st_ino) == (staged.st_dev, staged.st_ino)):
+                    args.report.unlink()
             except OSError:
-                try:
-                    published, staged = report_path.lstat(), staged_report.stat()
-                    if (stat.S_ISREG(published.st_mode) and
-                            (published.st_dev, published.st_ino) == (staged.st_dev, staged.st_ino)):
-                        report_path.unlink()
-                except OSError:
-                    pass
-                raise
+                pass
+            raise
+        fsync_directory(args.output.parent)
+    return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path)
     parser.add_argument('output', type=Path)
-    parser.add_argument('--format', required=True, choices=['cxfilterfs'])
     parser.add_argument('--report', type=Path, required=True)
-    parser.add_argument('--inconsistent-entry-policy', default='reject',
-                        choices=['reject', 'native-filtered-short-stream'])
+    parser.add_argument('--runtime-tool', type=Path, required=True,
+                        help='explicit packaged retrom-runtime scripts/runtime-cli.mjs')
+    parser.add_argument('--node', default=shutil.which('node') or 'node')
+    parser.add_argument('--platform', default='kirikiri')
     args = parser.parse_args()
-    report = {}
+    args.source = args.source.resolve(strict=True)
+    args.runtime_tool = args.runtime_tool.resolve(strict=True)
+    args.output, args.report = args.output.resolve(), args.report.resolve()
     try:
-        require(args.report.resolve() not in (args.source.resolve(), args.output.resolve()),
-                'report must not overwrite input or output')
-        require(not args.report.exists(), 'report exists; refusing to overwrite')
-        require(args.report.parent.is_dir(), 'report parent must exist')
-        require(args.report.parent.stat().st_dev == args.output.parent.stat().st_dev,
-                'report and output must be on the same filesystem for atomic publication')
-        standardize(args.source, args.output, args.report, report, args.inconsistent_entry_policy)
-    except (FormatError, OSError, UnicodeError, zipfile.BadZipFile, zlib.error) as exc:
-        report.update(status='failed', error=str(exc))
-        print(f'conversion failed: {exc}', file=sys.stderr)
-        # Failure reports are useful, but never overwrite existing files on an error path.
-        if (args.report.resolve() not in (args.source.resolve(), args.output.resolve())
-                and args.report.parent.is_dir() and not args.report.exists()):
-            try:
-                with args.report.open('x', encoding='utf-8') as f:
-                    json.dump(report, f, ensure_ascii=False, indent=2)
-                    f.write('\n')
-            except OSError as report_error:
-                print(f'could not persist failure report: {report_error}', file=sys.stderr)
+        report = standardize(args)
+    except (FormatError, OSError, ValueError, zipfile.BadZipFile) as error:
+        print(f'normalization failed: {error}', file=sys.stderr)
         return 1
-    print(json.dumps({k: v for k, v in report.items() if k not in ('archives', 'copiedMembers')},
+    print(json.dumps({key: value for key, value in report.items() if key not in ('files', 'normalization')},
                      ensure_ascii=False, indent=2))
     return 0
 
