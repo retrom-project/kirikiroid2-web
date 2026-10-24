@@ -4,9 +4,11 @@ import vm from 'node:vm';
 import {webcrypto, createHash} from 'node:crypto';
 const source = await fs.readFile(new URL('../../platforms/web/vlfs.js', import.meta.url), 'utf8');
 const sandbox = {Blob, DataView, DecompressionStream, ReadableStream, Map, Math, TextDecoder, TextEncoder,
- Uint8Array, URL, AbortController, setTimeout, clearTimeout, console: {log(){},warn(){}}, crypto:webcrypto,
+ Uint8Array, URL, AbortController, clearTimeout, console: {log(){},warn(){}}, crypto:webcrypto,
  navigator:{storage:{async getDirectory(){throw Error('unavailable');}}},window:{},
  fetch(){throw Error('VLFS must not fetch');}};
+// Timers of 15 seconds or more fire at once, so a read that outlasts such a deadline finishes quickly here.
+sandbox.setTimeout=(callback,ms,...args)=>setTimeout(callback,ms>=15000?0:ms,...args);
 vm.createContext(sandbox); vm.runInContext(source,sandbox);
 const vlfs=sandbox.window.VLFS; await vlfs.init();
 assert.equal(vlfs.contentAbi,'content-io-v1');
@@ -28,6 +30,9 @@ assert.deepEqual(Array.from(vlfs.readCached(fd,8)),Array(8).fill((2**32+3)%251))
 const position=vlfs.seek(fd,0,1);let release;pending=new Promise(r=>release=r);
 const active=vlfs.read(fd,8);await Promise.resolve();vlfs.close(fd);release();
 await assert.rejects(active,/CONTENT_IO_ABORTED/);assert.equal(vlfs._fds.has(fd),false);
+// A read waiting for the network longer than 15 seconds completes; only closing or aborting ends it.
+const slow=vlfs.open('/Data.xp3',0);vlfs.seek(slow,64,0);pending=new Promise(r=>setTimeout(r,20));
+assert.deepEqual(Array.from(await vlfs.read(slow,4)),Array(4).fill(64));vlfs.close(slow);
 pending=null;closed=true;const eof=vlfs.open('/Data.xp3',0);vlfs.seek(eof,reader.sizeBytes,0);
 assert.throws(()=>vlfs.readCached(eof,0),/CONTENT_IO_ABORTED/);
 await assert.rejects(vlfs.read(eof,0),/CONTENT_IO_ABORTED/);
