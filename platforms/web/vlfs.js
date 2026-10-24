@@ -115,8 +115,8 @@
             return hashTuple(["vlfs-derived", 1, rawObjectKey, entryPath, method, size]);
         },
         _entries: new Map(),     // path → entry
-        _lowerIndex: new Map(),  // lowercased path → canonical path（文件与目录都收录）
-        _dirs: new Map(),        // dirPath → Map<lowerName, name>（孩子名，含子目录）
+        _lowerIndex: new Map(),  // lowercased path → Set<canonical path>（文件与目录都收录）
+        _dirs: new Map(),        // dirPath → Map<name, name>（保留大小写不同的孩子名）
         _fds: new Map(),
         _nextFd: 1,
         _nextEntryId: 1,
@@ -409,9 +409,9 @@
             for (var i = chain.length - 1; i >= 0; i--) {
                 var p = chain[i];
                 this._dirs.set(p, new Map());
-                this._lowerIndex.set(p.toLowerCase(), p);
+                this._indexPath(p);
                 if (p !== '/') {
-                    this._dirs.get(dirname(p)).set(basename(p).toLowerCase(), basename(p));
+                    this._dirs.get(dirname(p)).set(basename(p), basename(p));
                 }
             }
         },
@@ -422,10 +422,10 @@
             if (old) this._dropEntryCache(old);
             entry.id = this._nextEntryId++;
             this._entries.set(path, entry);
-            this._lowerIndex.set(path.toLowerCase(), path);
+            this._indexPath(path);
             var dir = dirname(path);
             this._ensureDirNode(dir);
-            this._dirs.get(dir).set(basename(path).toLowerCase(), basename(path));
+            this._dirs.get(dir).set(basename(path), basename(path));
             return entry;
         },
 
@@ -619,11 +619,18 @@
             return null;
         },
 
-        // 大小写不敏感解析：返回规范路径或 null
+        _indexPath(path) {
+            var key = path.toLowerCase(), paths = this._lowerIndex.get(key);
+            if (!paths) this._lowerIndex.set(key, paths = new Set());
+            paths.add(path);
+        },
+
+        // 精确路径优先；大小写折叠必须唯一，不能由注册顺序选择文件。
         resolveCase(path) {
             path = normPath(path);
             if (this._entries.has(path) || this._dirs.has(path)) return path;
-            return this._lowerIndex.get(path.toLowerCase()) || null;
+            var paths = this._lowerIndex.get(path.toLowerCase());
+            return paths && paths.size === 1 ? paths.values().next().value : null;
         },
 
         listdir(path) {
@@ -657,9 +664,13 @@
             if (!e) return -1;
             this._dropEntryCache(e);
             this._entries.delete(path);
-            this._lowerIndex.delete(path.toLowerCase());
+            var key = path.toLowerCase(), paths = this._lowerIndex.get(key);
+            if (paths) {
+                paths.delete(path);
+                if (!paths.size) this._lowerIndex.delete(key);
+            }
             var d = this._dirs.get(dirname(path));
-            if (d) d.delete(basename(path).toLowerCase());
+            if (d) d.delete(basename(path));
             if (this.onUnlink) {
                 try { this.onUnlink(path); }
                 catch (error) { console.warn('[vlfs] onUnlink failed:', path, error); }

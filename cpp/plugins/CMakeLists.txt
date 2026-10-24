@@ -133,14 +133,15 @@ add_subdirectory(motionplayer)
 #add_subdirectory(json)
 add_subdirectory(fstat)
 #add_subdirectory(steam)
-#add_subdirectory(DrawDeviceForSteam)
+add_subdirectory(DrawDeviceForSteam)
 target_link_libraries(${PROJECT_NAME} PUBLIC
         psdfile
         psbfile
         layerExDraw
         motionplayer
         fstat
-#        json steam DrawDeviceForSteam
+        DrawDeviceForSteam
+#        json steam
 )
 
 # Monolithic native builds link these plugin translation units directly into
@@ -157,6 +158,7 @@ set(_KRKR2_PLUGIN_ARCHIVES
     layerExDraw
     motionplayer
     fstat
+    DrawDeviceForSteam
 )
 foreach(_plugin_archive IN LISTS _KRKR2_PLUGIN_ARCHIVES)
     if(APPLE AND NOT EMSCRIPTEN)

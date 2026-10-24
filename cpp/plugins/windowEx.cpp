@@ -20,6 +20,9 @@ typedef unsigned long ULONG_PTR;
 #include "GraphicsLoaderIntf.h"
 #include "EventIntf.h"
 #include "WindowImpl.h"
+#ifdef __EMSCRIPTEN__
+#include "WebDisplayMonitors.h"
+#endif
 
 #define NCB_MODULE_NAME TJS_W("windowEx.dll")
 #ifndef _WIN32
@@ -1424,7 +1427,11 @@ struct System {
     static tjs_error getDisplayMonitors(tTJSVariant *result, tjs_int numparams,
                                         tTJSVariant **param,
                                         iTJSDispatch2 *objthis) {
+#ifdef __EMSCRIPTEN__
+        return WindowExWeb::getDisplayMonitors(result, numparams, param);
+#else
         return TJS_S_OK;
+#endif
     }
 
     static tjs_error getMonitorInfo(tTJSVariant *result, tjs_int numparams,

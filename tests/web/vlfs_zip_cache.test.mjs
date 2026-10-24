@@ -187,6 +187,19 @@ async function readText(vlfs, filePath) {
 }
 
 const storageRoot = new MemoryDirectoryHandle("root");
+// Reuse the existing file bytes while exercising exact names and unique folded aliases.
+for (const names of [["/data.xp3", "/DATA.XP3"], ["/DATA.XP3", "/data.xp3"]]) {
+    const cases = loadVLFS(new MemoryDirectoryHandle("case-root"));
+    await cases.init();
+    for (const name of names) cases.registerOverlayFile(name, new TextEncoder().encode(name));
+    assert.deepEqual(Array.from(cases.listdir("/"), item => item.name).sort(), ["DATA.XP3", "data.xp3"]);
+    assert.equal(await readText(cases, "/data.xp3"), "/data.xp3");
+    assert.equal(await readText(cases, "/DATA.XP3"), "/DATA.XP3");
+    assert.equal(cases.resolveCase("/Data.Xp3"), null);
+    assert.equal(cases.unlink("/DATA.XP3"), 0);
+    assert.equal(cases.resolveCase("/Data.Xp3"), "/data.xp3");
+    assert.deepEqual(Array.from(cases.listdir("/"), item => item.name), ["data.xp3"]);
+}
 const resourceKey = "https://example.test/game.zip";
 const etag = '"archive-v1"';
 const archive = makeZip([

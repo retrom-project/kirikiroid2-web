@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,7 +23,10 @@ with tempfile.TemporaryDirectory(prefix="kirikiri-bookmark-test-") as directory:
         str(ROOT / "tests/web/host_bookmark_bridge.test.cpp"),
         "-o", str(executable),
     ], check=True)
-    result = subprocess.run([str(executable)], check=True, capture_output=True, text=True)
+    result = subprocess.run([str(executable)], capture_output=True, text=True)
+    if result.returncode:
+        print(result.stderr, file=sys.stderr)
+        result.check_returncode()
     assert "[bookmark] script exception: bookmark test failure" in result.stderr, result.stderr
     assert "[bookmark] unknown script exception" in result.stderr, result.stderr
 print("Web host bookmark readiness tests passed")

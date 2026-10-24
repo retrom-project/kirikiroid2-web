@@ -24,7 +24,9 @@ jobs:
       - name: Validate fork source contract
         run: |
           python3 .github/rpg-runtime/verify-source.py
+          python3 -m unittest discover -s tools/xp3 -p 'test_*.py'
           python3 .github/rpg-runtime/test-bookmark-bridge.py
+          python3 .github/rpg-runtime/test-display-monitors.py
           node tests/web/jspi_mainloop_scheduler.test.mjs
           node .github/rpg-runtime/test-vlfs.mjs
       - name: Build Web assets
