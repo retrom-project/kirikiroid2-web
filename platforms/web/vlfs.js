@@ -83,12 +83,12 @@
     async function readContent(reader, pos, len, signal) {
         if (!Number.isSafeInteger(pos) || pos < 0 || !Number.isSafeInteger(len) || len < 0 ||
             pos > reader.sizeBytes - len) throw new Error('CONTENT_IO_BOUNDS');
-        var controller = new AbortController(), timer, rejectAbort;
+        var controller = new AbortController(), rejectAbort;
         var abort = function () { controller.abort(); rejectAbort(new Error('CONTENT_IO_ABORTED')); };
         var aborted = new Promise(function (_, reject) { rejectAbort = reject; });
         if (signal) signal.addEventListener('abort', abort, {once:true});
         if (signal && signal.aborted) abort();
-        timer = setTimeout(function () {controller.abort(); rejectAbort(new Error('CONTENT_IO_TIMEOUT'));}, 15000);
+        // No local deadline: the runtime reader bounds each network attempt and waits through outages.
         var work = (async function () {
             var out = new Uint8Array(len), done = 0;
             do {
@@ -101,7 +101,7 @@
             return out;
         })();
         try { return await Promise.race([work, aborted]); }
-        finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', abort); }
+        finally { if (signal) signal.removeEventListener('abort', abort); }
     }
     async function hashTuple(tuple) {
         var bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(tuple))));
