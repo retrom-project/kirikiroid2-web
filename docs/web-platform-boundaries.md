@@ -66,12 +66,12 @@ SQLite [warns that unlinking an open database can corrupt it](https://www.sqlite
 Close every connection and statement before deleting it. WAL remains explicitly
 unsupported.
 
-This file layout belongs to the host's `kirikiri-game-save-v2` recovery contract
-(`kirikiri-game-save-v2-storage-v1` after its public storage wrapper). The previous
-hidden `/savedata/sqlite/<hex>.bin` envelope is neither read nor migrated. Old
-save files are retained, but a core fingerprint warning alone cannot make that
-previous layout compatible. Full raw database bytes and native tombstones must
-be imported before the new instance starts; merely retaining SQL in a live
+This file layout belongs to the host's `kirikiri-game-save-v1` recovery contract
+(`kirikiri-game-save-v1-storage-v1` after its public storage wrapper). The previous
+hidden `/savedata/sqlite/<hex>.bin` envelope is neither read nor migrated. This
+keeps the existing native GAME_SAVE format; no separate format generation is
+introduced for the development-only sidecar layout. Full raw database bytes and
+native tombstones must be imported before the new instance starts; merely retaining SQL in a live
 connection does not constitute persistence. The standalone real-SQLite and
 production-VLFS tests cover this storage boundary, not every game's save UI or
 an engine/browser restart.

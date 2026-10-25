@@ -35,6 +35,12 @@ release rules supplement rather than replace it.
 
 ## Quality and releases
 
+- Before changing an API, ABI or save layout, establish whether that contract has
+  actually been released, used in production or promised to a consumer. Keep the
+  selected contract identifier while a feature is still under development;
+  PFB commits and test saves do not justify V2, parallel compatibility paths or
+  migration logic. Update the current implementation and its callers together.
+  This does not authorize discarding data or changing immutable release tags.
 - Before pushing, run `python3 .github/rpg-runtime/verify-source.py`.
 - Changes that affect Web output must also run
   `.github/rpg-runtime/build-web.sh <empty-output-directory>` followed by
