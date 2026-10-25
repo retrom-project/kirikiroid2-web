@@ -21,6 +21,10 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+      - name: Install native regression dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfreetype-dev libsqlite3-dev pkg-config
       - name: Validate fork source contract
         run: |
           python3 .github/rpg-runtime/verify-source.py

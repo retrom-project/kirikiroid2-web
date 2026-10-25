@@ -47,6 +47,11 @@ release rules supplement rather than replace it.
   `.github/rpg-runtime/verify-release.py` with a valid candidate identity.
 - PRs to `retrom/g13dda190f837` must pass
   `.github/workflows/rpg-runtime-quality.yml`.
+- Enable the Retrom quality and release workflows for this fork. Keep inherited
+  upstream build, format and differential/multi-platform workflows disabled in
+  repository Actions settings: they target upstream branches/toolchains and are
+  not part of the Retrom delivery path. Do not disable or skip required Retrom
+  quality checks to save runner time.
 - Release tags are `retrom-core-g13dda190f837-rN`, with optional `-rc.N` only
   for integration candidates. Increment `rN` for any source, build, asset, or
   adapter-contract change on this baseline.
