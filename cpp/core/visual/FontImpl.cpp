@@ -1,3 +1,6 @@
+#ifdef __EMSCRIPTEN__
+#include <sys/stat.h>
+#endif
 #include "FontImpl.h"
 #include <ft2build.h>
 #include FT_TRUETYPE_IDS_H
@@ -18,6 +21,10 @@
 #include <cocos/platform/CCFileUtils.h>
 #include "StorageImpl.h"
 #include "BinaryStream.h"
+#ifdef __EMSCRIPTEN__
+#include "FontFileCandidates.h"
+#include <memory>
+#endif
 
 tTJSHashTable<ttstr, TVPFontNamePathInfo, tTVPttstrHash> TVPFontNames;
 static ttstr TVPDefaultFontName;
@@ -249,6 +256,41 @@ void TVPInitFontNames() {
         TVPDefaultFontName = TVPFontNames.GetLast().GetKey();
     }
 
+#ifdef __EMSCRIPTEN__
+    // VN_REPAIR_FONT_DISCOVERY_BEGIN
+    // The browser has no OS font installer. Register explicitly supplied loose
+    // font files in the project root and its fonts directory. Never traverse
+    // XP3 resources, subdirectories, or arbitrary large non-font files.
+    {
+        FontFileCandidates::Budget budget;
+        const auto application = TVPGetAppPath();
+        for(const auto &directory : {application, application + TJS_W("fonts/")}) {
+            ttstr nativeDirectory = directory;
+            TVPGetLocalName(nativeDirectory);
+            std::size_t entries = 0;
+            TVPGetLocalFileListAt(nativeDirectory,
+                [&](const ttstr &, tTVPLocalFileInfo *info) {
+                    if(entries++ >= FontFileCandidates::Budget::DirectoryEntries ||
+                       (info->Mode & S_IFMT) != S_IFREG) return;
+                    const ttstr name(info->NativeName);
+                    if(!FontFileCandidates::filename({name.c_str(), static_cast<std::size_t>(name.length())}) ||
+                       !budget.take(info->Size)) return;
+                    const auto path = directory + name;
+                    try {
+                        std::unique_ptr<tTJSBinaryStream> stream(TVPCreateStream(path, TJS_BS_READ));
+                        unsigned char signature[4];
+                        if(!stream || stream->Read(signature, sizeof(signature)) != sizeof(signature) ||
+                           !FontFileCandidates::header(signature)) return;
+                        stream.reset();
+                        TVPEnumFontsProc(path);
+                    } catch(...) {
+                        TVPAddLog(ttstr(TJS_W("Could not register optional loose font: ")) + path);
+                    }
+                });
+        }
+    }
+    // VN_REPAIR_FONT_DISCOVERY_END
+#else
     // check exePath + "/fonts/*.ttf"
     {
         std::vector<ttstr> list;
@@ -270,6 +312,7 @@ void TVPInitFontNames() {
             TVPEnumFontsProc(*it);
         }
     }
+#endif
 
     if(TVPDefaultFontName.IsEmpty()) {
         TVPShowSimpleMessageBox(

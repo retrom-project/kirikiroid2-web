@@ -50,6 +50,7 @@ class tFreeTypeFace {
     ttstr FontName; //!< フォント名
     tBaseFreeTypeFace *Face; //!< Face オブジェクト
     FT_Face FTFace; //!< FreeType Face オブジェクト
+    tjs_int LayoutAscent; //!< shared font-declared top-to-baseline, in design units
     tjs_uint32 Options; //!< フラグ
 
     typedef std::vector<FT_ULong> tGlyphIndexToCharcodeVector;
@@ -96,14 +97,14 @@ public:
     [[nodiscard]] tjs_int GetAscent() const {
         tjs_int ppem = FTFace->size->metrics.y_ppem;
         tjs_int upe = FTFace->units_per_EM;
-        return FTFace->ascender * ppem / upe;
+        return LayoutAscent * ppem / upe;
     }
     void GetUnderline(tjs_int &pos, tjs_int &thickness) const {
         tjs_int ppem = FTFace->size->metrics.y_ppem;
         tjs_int upe = FTFace->units_per_EM;
         tjs_int liney = 0; // 下線の位置
         tjs_int height = FT_PosToInt(FTFace->size->metrics.height);
-        liney = ((FTFace->ascender - FTFace->underline_position) * ppem) / upe;
+        liney = ((LayoutAscent - FTFace->underline_position) * ppem) / upe;
         thickness = (FTFace->underline_thickness * ppem) / upe;
         if(thickness < 1)
             thickness = 1;
@@ -118,7 +119,7 @@ public:
         thickness = FTFace->underline_thickness * ppem / upe;
         if(thickness < 1)
             thickness = 1;
-        pos = FTFace->ascender * 7 * ppem / (10 * upe);
+        pos = LayoutAscent * 7 * ppem / (10 * upe);
     }
     tTVPCharacterData *GetGlyphFromCharcode(tjs_char code);
     bool GetGlyphRectFromCharcode(struct tTVPRect &rt, tjs_char code,
