@@ -129,4 +129,5 @@ with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
         str(executable), str(generated_font), str(bundled), str(scratch / "base-table.bin"),
         str(args.heavy_font.resolve()) if args.heavy_font else "",
         str(args.body_font.resolve()) if args.body_font else "",
+        str(ROOT / "ui/cocos-studio/NotoSansSC-Regular.otf"),
     ], check=True)

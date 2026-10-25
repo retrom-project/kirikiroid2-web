@@ -13,4 +13,19 @@ inline std::u16string_view trim(std::u16string_view name) {
     return name;
 }
 
+// Windows exposes these two names for the same common Chinese family. This
+// identifies a missing-family request; it does not register a substitute as
+// the real family or change the order of available font candidates.
+inline bool requestsSongti(std::u16string_view name) {
+    if(name == u"宋体") return true;
+    constexpr std::u16string_view english = u"simsun";
+    if(name.size() != english.size()) return false;
+    for(std::size_t i = 0; i < name.size(); ++i) {
+        auto code = name[i];
+        if(code >= u'A' && code <= u'Z') code += u'a' - u'A';
+        if(code != english[i]) return false;
+    }
+    return true;
+}
+
 } // namespace FontNameCandidates

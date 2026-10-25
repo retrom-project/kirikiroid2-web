@@ -23,6 +23,7 @@
 #include "BinaryStream.h"
 #ifdef __EMSCRIPTEN__
 #include "FontFileCandidates.h"
+#include "FontNameCandidates.h"
 #include <memory>
 #endif
 
@@ -335,6 +336,58 @@ TVPFontNamePathInfo *TVPFindFont(const ttstr &fontname) {
     }
     return info;
 }
+
+#ifdef __EMSCRIPTEN__
+bool TVPHasRegisteredFont(const ttstr &name) {
+    return TVPFindFont(name) != nullptr;
+}
+
+ttstr TVPFindRegisteredSongtiFont(const ttstr &requested) {
+    const auto view = [](const ttstr &name) {
+        return std::u16string_view(name.c_str(), static_cast<std::size_t>(name.length()));
+    };
+    if(!FontNameCandidates::requestsSongti(view(requested))) return {};
+    if(TVPHasRegisteredFont(requested)) return requested;
+    for(const ttstr &name : {ttstr(TJS_W("宋体")), ttstr(TJS_W("SimSun"))})
+        if(TVPHasRegisteredFont(name)) return name;
+
+    // This registry can change after System.addFont. GetLast is a valid
+    // element, so enumerate until the iterator is null, including that item.
+    // Restrict normalization to this known family and keep selection stable
+    // when several noncanonical spellings are registered.
+    ttstr selected;
+    for(auto it = TVPFontNames.GetFirst(); !it.IsNull(); ++it) {
+        const ttstr &name = it.GetKey();
+        if(FontNameCandidates::requestsSongti(view(name)) &&
+           (selected.IsEmpty() || view(name) < view(selected)))
+            selected = name;
+    }
+    return selected;
+}
+
+ttstr TVPLoadWebCjkFallbackFont() {
+    const ttstr family(TJS_W("Noto Sans SC"));
+    if(TVPHasRegisteredFont(family)) return family;
+    static bool attempted = false;
+    if(attempted) return {};
+    attempted = true;
+    // Load only when a known Windows family is unavailable. This is a Web
+    // font substitution, not a claim of SimSun metric or appearance parity.
+    // Registering it here also leaves the previously chosen default intact.
+    auto data = cocos2d::FileUtils::getInstance()->getDataFromFile("NotoSansSC-Regular.otf");
+    if(!data.isNull()) {
+        TVPInternalEnumFonts(data.getBytes(), data.getSize(), "NotoSansSC-Regular.otf",
+            [](TVPFontNamePathInfo *info) -> tTJSBinaryStream * {
+                auto bytes = cocos2d::FileUtils::getInstance()->getDataFromFile(info->Path.AsStdString());
+                auto *stream = new tTVPMemoryStream();
+                stream->WriteBuffer(bytes.getBytes(), bytes.getSize());
+                stream->SetPosition(0);
+                return stream;
+            });
+    }
+    return TVPHasRegisteredFont(family) ? family : ttstr();
+}
+#endif
 
 tjs_uint32 tTVPttstrHash::Make(const ttstr &val) {
     const tjs_char *ptr = val.c_str();

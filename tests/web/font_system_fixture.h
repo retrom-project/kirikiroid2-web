@@ -3,6 +3,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <type_traits>
 
 using tjs_char = char16_t;
 using tjs_int = int;
@@ -50,6 +51,10 @@ struct tTJSHashTable {
 
 class IndividualConfigManager {
 public:
+    static inline bool forceDefault = false;
     static IndividualConfigManager *GetInstance() { static IndividualConfigManager instance; return &instance; }
-    template<class T> T GetValue(const char *, const T &defaultValue) { return defaultValue; }
+    template<class T> T GetValue(const char *, const T &defaultValue) {
+        if constexpr(std::is_same_v<T, bool>) return forceDefault;
+        return defaultValue;
+    }
 };
