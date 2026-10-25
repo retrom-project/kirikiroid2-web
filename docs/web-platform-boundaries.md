@@ -47,9 +47,34 @@ The Web Sqlite plugin uses real SQLite queries, bindings, transactions and
 statements. Read-only original databases are read through storage callbacks;
 writable databases persist in the virtual user overlay. Writable snapshots are
 limited to 64 MiB per database and remain subject to the host save bundle limit.
-WAL is explicitly unsupported. Native file deletion through an unrelated
-`Storages` API does not currently remove a database's managed sidecar; callers
-requiring that reset behavior need separate verification.
+The original logical filename identifies one database: CREATE publishes a real
+zero-length file, commits publish raw SQLite bytes at that path, and journal or
+database deletion emits the same native unlink/tombstone used by `Storages`.
+The TVP media manager converts canonical `file://` storage names to native VLFS
+paths before publication. Archive member names retain their original read
+streams; they are never passed to VLFS as writable filenames. A read/write
+request for an existing archive database falls back to read-only with truthful
+SQLite output flags. Queries remain available, while writes and archive
+deletion report `SQLITE_READONLY`. See the [SQLite VFS contract](https://www.sqlite.org/c3ref/vfs.html).
+
+Open SQLite files share their current object, but an Environment keeps only weak
+references to closed files. After all database connections and statements for a
+path are closed, a native delete/recreate or a newly imported native overlay is
+visible to the next open even if another database retains that Environment.
+Unlinking a database while it is still open is not a supported reset protocol;
+SQLite [warns that unlinking an open database can corrupt it](https://www.sqlite.org/howtocorrupt.html#unlinking_or_renaming_a_database_file_while_in_use).
+Close every connection and statement before deleting it. WAL remains explicitly
+unsupported.
+
+This file layout belongs to the host's `kirikiri-game-save-v2` recovery contract
+(`kirikiri-game-save-v2-storage-v1` after its public storage wrapper). The previous
+hidden `/savedata/sqlite/<hex>.bin` envelope is neither read nor migrated. Old
+save files are retained, but a core fingerprint warning alone cannot make that
+previous layout compatible. Full raw database bytes and native tombstones must
+be imported before the new instance starts; merely retaining SQL in a live
+connection does not constitute persistence. The standalone real-SQLite and
+production-VLFS tests cover this storage boundary, not every game's save UI or
+an engine/browser restart.
 
 ## Native GAME_SAVE observation
 

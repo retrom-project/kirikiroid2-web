@@ -6,6 +6,7 @@
 #include "Database.h"
 #include <boost/locale/encoding_utf.hpp>
 #include <emscripten.h>
+#include <unistd.h>
 
 #define NCB_MODULE_NAME TJS_W("sqlite3.dll")
 
@@ -41,6 +42,16 @@ public:
 };
 
 class TvpBacking : public KirikiriSqlite::Backing {
+    static std::string localPath(const std::string &path) {
+        // A canonical TVP storage name may contain file:// or archive>entry.
+        // Only the media manager may map it to the native VLFS namespace;
+        // feeding the canonical name to VLFS.normalizePath creates a different
+        // file. Archive members deliberately have no writable local name.
+        const auto local = TVPGetLocallyAccessibleName(wide(path));
+        if(local.IsEmpty())
+            throw KirikiriSqlite::StorageError(SQLITE_READONLY, "SQLite storage has no writable local file");
+        return utf8(local);
+    }
 public:
     std::string canonical(const std::string &path) override {
         if(path.empty()) throw KirikiriSqlite::StorageError(SQLITE_CANTOPEN, "SQLite storage path is empty");
@@ -48,17 +59,21 @@ public:
         const auto placed = TVPGetPlacedPath(input);
         return utf8(placed.IsEmpty() ? TVPNormalizeStorageName(input) : placed);
     }
+    bool writable(const std::string &path) override {
+        return !TVPGetLocallyAccessibleName(wide(path)).IsEmpty();
+    }
     bool exists(const std::string &path) override { return TVPIsExistentStorageNoSearch(wide(path)); }
     std::unique_ptr<KirikiriSqlite::StorageFile> read(const std::string &path) override {
         return std::make_unique<TvpFile>(path);
     }
     void publish(const std::string &path, const KirikiriSqlite::Bytes &bytes) override {
+        const auto native = localPath(path);
         // Copy before publishing: the Wasm buffer is not retained by JS. The
-        // same complete bytes enter VLFS and its existing save-close hook, so
-        // host checkpoints can restore a fresh core, including journal deletes.
+        // raw SQLite file enters the native namespace and save-close hook.
         const int status = MAIN_THREAD_EM_ASM_INT({
             try {
-                if(typeof VLFS === 'undefined' || typeof VLFS.onWriteClose !== 'function') return 0;
+                if(typeof VLFS === 'undefined' || typeof VLFS.onWriteClose !== 'function' ||
+                   typeof VLFS.registerOverlayFile !== 'function') return 0;
                 var path = UTF8ToString($0);
                 var data = HEAPU8.slice($1, $1 + $2);
                 VLFS.onWriteClose(path, data);
@@ -68,8 +83,26 @@ public:
                 console.error('[sqlite] managed storage publish failed', error);
                 return 0;
             }
-        }, path.c_str(), bytes.data(), static_cast<int>(bytes.size()));
+        }, native.c_str(), bytes.data(), static_cast<int>(bytes.size()));
         if(!status) throw KirikiriSqlite::StorageError(SQLITE_IOERR_FSYNC, "SQLite VLFS save-close publication failed");
+        TVPClearStorageCaches();
+    }
+    void remove(const std::string &path) override {
+        const auto native = localPath(path);
+        const int status = MAIN_THREAD_EM_ASM_INT({
+            try {
+                if(typeof VLFS === 'undefined' || typeof VLFS.onUnlink !== 'function' ||
+                   typeof VLFS.unlink !== 'function') return 0;
+                return VLFS.unlink(UTF8ToString($0)) === 0 ? 1 : 0;
+            } catch(error) {
+                console.error('[sqlite] managed storage delete failed', error);
+                return 0;
+            }
+        }, native.c_str());
+        if(!status) throw KirikiriSqlite::StorageError(SQLITE_IOERR_DELETE, "SQLite VLFS deletion failed");
+        // As with the Web native delete boundary, discard any MEMFS mirror.
+        ::unlink(native.c_str());
+        TVPClearStorageCaches();
     }
 };
 

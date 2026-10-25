@@ -27,6 +27,7 @@ struct SavedBacking : Backing {
     std::string canonical(const std::string &path) override {
         return path.front() == '/' ? path : "/game/" + path;
     }
+    bool writable(const std::string &path) override { return path.find('>') == std::string::npos; }
     bool exists(const std::string &path) override { return files.count(path); }
     std::unique_ptr<StorageFile> read(const std::string &path) override {
         const auto found = files.find(path);
@@ -35,10 +36,9 @@ struct SavedBacking : Backing {
     }
     void publish(const std::string &path, const Bytes &bytes) override {
         if(fail) { fail = false; throw StorageError(SQLITE_IOERR_FSYNC, "managed write-close failed"); }
-        assert(path.rfind("/savedata/sqlite/", 0) == 0);
-        assert(!bytes.empty());
         files[path] = bytes; ++publications;
     }
+    void remove(const std::string &path) override { files.erase(path); }
 };
 
 static sqlite3_int64 count(Database &db) {
@@ -88,9 +88,9 @@ int main() {
     assert((db.connection()->code & 0xff) == SQLITE_IOERR);
     assert(db.connection()->message.find("managed write-close failed") != std::string::npos);
     assert(count(db) == 2);
-    // The source files never receive writes. A new environment restores only
-    // published /savedata bytes; SQLite must still recover typed rows.
-    assert(!saved->files.count("/game/scene.sdb"));
+    // Raw native-path overlays cross the save boundary. An independent
+    // environment must recover the committed typed rows from those files.
+    assert(saved->files.count("/game/scene.sdb"));
     auto restoredBacking = std::make_unique<SavedBacking>();
     restoredBacking->files = saved->files;
     auto restoredEnvironment = std::make_shared<Environment>(std::move(restoredBacking));
@@ -114,8 +114,7 @@ int main() {
     assert(restored.exec("select patchdb.text.value from datadb.text join patchdb.text using(id)", {}, [&](const Row &value) {
         assert(std::get<std::string>(value[0]) == "patched");
     }));
-    // Deletion is a persistent tombstone. It must not resurrect an immutable
-    // source file or a transaction journal from the previous checkpoint.
+    // Journal deletion removes the native file; no hidden companion survives.
     const std::string journal = "/game/scene.sdb-journal";
     assert(!restoredEnvironment->storage.exists(journal));
     assert(saved->publications > 0);
@@ -129,8 +128,7 @@ int main() {
     // Packaged resources stay immutable and open lazily. No snapshot needs to
     // be materialized when a read-only connection accesses an original DB.
     SavedBacking packaged;
-    auto snapshot = saved->files.at(ManagedStorage::snapshotPath("/game/scene.sdb"));
-    packaged.files["/game/source.sdb"] = Bytes(snapshot.begin() + 1, snapshot.end());
+    packaged.files["/game/source.sdb"] = saved->files.at("/game/scene.sdb");
     ManagedStorage lazy(packaged);
     int flags = 0;
     auto original = lazy.open("/game/source.sdb", SQLITE_OPEN_READONLY, &flags);
@@ -138,11 +136,13 @@ int main() {
     unsigned char header[32];
     assert(original->read(header, sizeof(header), 0) == sizeof(header));
     assert(packaged.reads == 1 && packaged.publications == 0);
-    // Corrupt envelopes fail explicitly, instead of becoming empty databases.
-    SavedBacking corrupt;
-    corrupt.files[ManagedStorage::snapshotPath("/game/bad.sdb")] = {};
-    ManagedStorage bad(corrupt);
-    try { bad.exists("/game/bad.sdb"); assert(false); }
-    catch(const StorageError &error) { assert(error.code == SQLITE_CORRUPT); }
+    // SQLite itself validates raw database contents; a non-database is never
+    // interpreted as a managed envelope or silently replaced by an empty DB.
+    auto corrupt = std::make_unique<SavedBacking>();
+    corrupt->files["/game/bad.sdb"] = Bytes(200, 0xff);
+    auto bad = std::make_shared<Environment>(std::move(corrupt));
+    Database invalid(bad, "bad.sdb", true);
+    assert(!invalid.exec("select * from sqlite_master"));
+    assert(invalid.connection()->code == SQLITE_NOTADB);
     std::cout << "Managed SQLite bind/exec/step, lifecycle, attachments and persisted reopen passed\n";
 }
