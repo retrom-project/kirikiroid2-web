@@ -45,6 +45,10 @@
 
 #include "Platform.h"
 #include "ConfigManager/IndividualConfigManager.h"
+#ifdef __EMSCRIPTEN__
+#include "../../environ/web/HostNativeExit.h"
+#include "Exception.h"
+#endif
 
 //---------------------------------------------------------------------------
 // global data
@@ -388,6 +392,9 @@ void TVPTerminateAsync(int code) {
     // do "A"synchronous temination of application
     TVPTerminated = true;
     TVPTerminateCode = code;
+#ifdef __EMSCRIPTEN__
+    TVPWebRequestNativeExit(code);
+#endif
 
     // posting dummy message will prevent "missing WM_QUIT bug" in
     // Direct3D framework.
@@ -402,9 +409,16 @@ void TVPTerminateAsync(int code) {
 
 //---------------------------------------------------------------------------
 void TVPTerminateSync(int code) {
+#ifdef __EMSCRIPTEN__
+    // A JSPI tick still owns its TJS frames here. Unwind it before the Web
+    // Host flushes system data and performs the existing engine teardown.
+    TVPTerminateAsync(code);
+    throw EAbort(TJS_W(""));
+#else
     // do synchronous temination of application (never return)
     TVPSystemUninit();
     TVPExitApplication(code);
+#endif
 }
 
 //---------------------------------------------------------------------------

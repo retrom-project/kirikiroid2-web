@@ -77,6 +77,7 @@ struct iTJSDispatch2 {
     void Release() { if(--references == 0) delete this; }
     std::map<std::wstring, tTJSVariant> properties;
     bool function = false;
+    bool valid = true;
     bool throws = false;
     int callException = 0;
     int calls = 0;
@@ -94,6 +95,7 @@ struct iTJSDispatch2 {
     int PropGet(int flags, const wchar_t *name, void *, tTJSVariant *result,
                 iTJSDispatch2 *) {
         lastGetFlags = flags;
+        if(!valid) return TJS_E_FAIL;
         if(throws) throw std::runtime_error("script unavailable");
         if(onGet) onGet(name);
         auto found = properties.find(name);
@@ -114,6 +116,9 @@ struct iTJSDispatch2 {
     }
     virtual int IsInstanceOf(tjs_uint32, const tjs_char *, tjs_uint32 *, const wchar_t *, iTJSDispatch2 *) {
         return function ? TJS_S_TRUE : TJS_S_FALSE;
+    }
+    virtual tjs_error IsValid(tjs_uint32, const tjs_char *, tjs_uint32 *, iTJSDispatch2 *) {
+        return valid ? TJS_S_TRUE : TJS_S_FALSE;
     }
     virtual int FuncCall(tjs_uint32, const tjs_char *, tjs_uint32 *, tTJSVariant *result, int count,
                  tTJSVariant **arguments, iTJSDispatch2 *receiver) {
@@ -166,6 +171,15 @@ bool TVPStartupSuccess = false;
 bool testLoopRegistered = false;
 bool testLoopPending = false;
 bool testLoopStopping = false;
+int testSystemShutdowns = 0;
+std::function<void()> testSystemShutdown;
+void TVPSystemUninit() {
+    if(testSystemShutdown) testSystemShutdown();
+    ++testSystemShutdowns;
+    testGlobal = nullptr;
+}
+std::vector<int> testNativeExitStatuses;
+inline void krkr2_host_notify_native_exit(int status) { testNativeExitStatuses.push_back(status); }
 #define EM_JS(type, name, args, ...) type name args;
 inline int krkr2_host_main_loop_is_idle() {
     return testLoopRegistered && !testLoopPending && !testLoopStopping;
