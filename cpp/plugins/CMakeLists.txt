@@ -25,6 +25,14 @@ set(_PLUGIN_SOURCES
 )
 target_sources(${PROJECT_NAME} PRIVATE ${_PLUGIN_SOURCES})
 
+# Browser SQLite uses Kiri resource streams and the managed VLFS save overlay.
+# Native reference reconstruction remains independent of this Web extension.
+if(EMSCRIPTEN)
+    find_package(unofficial-sqlite3 CONFIG REQUIRED)
+    target_sources(${PROJECT_NAME} PRIVATE sqlite/Sqlite.cpp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE unofficial::sqlite3::sqlite3)
+endif()
+
 # CBinaryAccessor is one native dispatch type shared by xp3filter.dll and the
 # emoteplayer PreRegist callback's two Motion.ResourceManager decrypt setters.
 # The four references agree on this translation-unit sharing and dependency.

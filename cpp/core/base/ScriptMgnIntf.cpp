@@ -58,6 +58,25 @@
 #include <cctype>
 #include <string>
 #include "LogoTrace.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+// Web host boundary: this is called only after System.exceptionHandler has
+// declined the exception. Ordinary script dialogs and caught errors do not
+// cross this boundary. Standalone builds keep their existing error dialog.
+EM_JS(int, TVPWebReportScriptException,
+      (const char *message, const char *script, int line, const char *trace), {
+    if (typeof Module['onScriptException'] !== 'function') return 0;
+    Module['onScriptException']({
+        message: UTF8ToString(message).slice(0, 2048),
+        script: UTF8ToString(script).slice(0, 1024),
+        line: line,
+        trace: UTF8ToString(trace).slice(0, 8192)
+    });
+    return 1;
+});
+#endif
+
 
 namespace {
     bool TVPScriptLogoTraceEnabled() {
@@ -1258,6 +1277,11 @@ void TVPShowScriptException(eTJS &e) {
             (ttstr(TVPScriptExceptionRaised) + TJS_W("\n") + e.GetMessage());
         TVPAddLog(ttstr(TVPScriptExceptionRaised) + TJS_W("\n") +
                   e.GetMessage());
+#ifdef __EMSCRIPTEN__
+        const auto message = e.GetMessage().AsStdString();
+        if(TVPWebReportScriptException(message.c_str(), "", 0, ""))
+            return;
+#endif
         TVPShowSimpleMessageBox(errstr, TVPGetErrorDialogTitle());
         // Application->MessageDlg( errstr.AsStdString(),
         // std::wstring(), mtError, mbOK );
@@ -1277,6 +1301,18 @@ void TVPShowScriptException(eTJSScriptError &e) {
                   e.GetMessage());
         if(e.GetTrace().GetLen() != 0)
             TVPAddLog(ttstr(TJS_W("trace : ")) + e.GetTrace());
+#ifdef __EMSCRIPTEN__
+        const auto message = e.GetMessage().AsStdString();
+        const auto trace = e.GetTrace().AsStdString();
+        const auto *block = e.GetBlockNoAddRef();
+        const auto script = block && block->GetName()
+            ? ttstr(block->GetName()).AsStdString() : std::string();
+        const int line = block ? 1 + block->SrcPosToLine(e.GetPosition()) -
+            block->GetLineOffset() : 0;
+        if(TVPWebReportScriptException(message.c_str(), script.c_str(), line,
+                                      trace.c_str()))
+            return;
+#endif
         TVPShowSimpleMessageBox(errstr, TVPGetErrorDialogTitle());
         //	Application->MessageDlg( errstr.AsStdString(),
         // Application->GetTitle(), mtStop, mbOK );

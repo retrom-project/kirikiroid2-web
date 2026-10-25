@@ -13,6 +13,7 @@
 
 #include "tjsCommHead.h"
 #include "FreeType.h"
+#include "FontBaseline.h"
 // #include "NativeFreeTypeFace.h"
 // #include "uni_cp932.h"
 // #include "cp932_uni.h"
@@ -280,6 +281,7 @@ tFreeTypeFace::tFreeTypeFace(const ttstr &fontname, tjs_uint32 options) :
         // 例外がここで発生する可能性があるので注意
     }
     FTFace = Face->GetFTFace();
+    LayoutAscent = FontBaseline::designAscent(FTFace);
 
     // マッピングを確認する
     if(FTFace->charmap == nullptr) {
@@ -491,8 +493,7 @@ tTVPCharacterData *tFreeTypeFace::GetGlyphFromCharcode(tjs_char code) {
         // tGlyphBitmap を作成して返す
         // int baseline = (int)(FTFace->height + FTFace->descender) *
         // FTFace->size->metrics.y_ppem / FTFace->units_per_EM;
-        int baseline = (int)(FTFace->ascender) * FTFace->size->metrics.y_ppem /
-            FTFace->units_per_EM;
+        int baseline = GetAscent();
 
         glyph_bmp = new tTVPCharacterData(ft_bmp->buffer, ft_bmp->pitch,
                                           FTFace->glyph->bitmap_left,
@@ -540,8 +541,7 @@ bool tFreeTypeFace::GetGlyphRectFromCharcode(tTVPRect &rt, tjs_char code,
     if(!LoadGlyphSlotFromCharcode(code))
         return false;
 
-    int baseline = (int)(FTFace->ascender) * FTFace->size->metrics.y_ppem /
-        FTFace->units_per_EM;
+    int baseline = GetAscent();
     /*
     FT_Render_Glyph でレンダリングしないと以下の各値は取得できない
     tjs_int t = baseline - FTFace->glyph->bitmap_top;

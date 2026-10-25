@@ -9,7 +9,7 @@
 // "SuspendError: Suspending() wrapper called outside of a promising() context"。
 //
 // 本项目 emscripten_set_main_loop_arg 的唯一注册者是 krkr2_main_loop_tick
-//（项目显式配置的 JSPI_EXPORTS 唯一成员；SDK 另行包装 main 与 pthread 入口，
+//（JSPI_EXPORTS 中的主循环入口；元数据刷新直接通过导出调用，SDK 另行包装 main 与 pthread 入口，
 // 见 CMakeLists.txt 与 vcpkg cocos2dx patch
 // CCApplication-emscripten.cpp），故此处无条件包 promising——与 Chrome 下
 // getWasmTableEntry 命中身份比较后的行为完全一致，对 V8 无行为变化。
@@ -36,16 +36,30 @@ addToLibrary({
       MainLoop.__krkr2PromiseAwareSchedulerState = promiseState;
       globalThis.__krkr2MainLoopPromiseState = promiseState;
     }
+    Module['pauseMainLoop'] = () => {
+      MainLoop.pause();
+      var pending = promiseState.pending;
+      var drained = () => {
+        if (promiseState.pending === pending) promiseState.pending = null;
+      };
+      return Promise.resolve(pending).then(drained, (error) => {
+        drained();
+        throw error;
+      });
+    };
     // Web host lifetime boundary: pause prevents another frame, but a tick
     // suspended in a content read still owns the Wasm stack and VLFS globals.
     // The host cancels its readers after this synchronous pause, then awaits
     // this drain before releasing those globals. Only the resulting content
     // cancellation is expected; unrelated failures remain scheduler errors.
-    Module['krkr2StopMainLoop'] = () => {
+    Module['krkr2StopMainLoop'] = (hostOperation) => {
       promiseState.stopping = true;
       MainLoop.pause();
       var cancelBookmark = () => Module['_krkr2_host_cancel_bookmark_load']();
-      return Promise.resolve(promiseState.pending).then(cancelBookmark, cancelBookmark);
+      // A host checkpoint export may suspend independently of the paused frame
+      // loop. Neither observer detachment nor Module/VLFS disposal may reenter
+      // that Wasm stack before the reader cancellation has unwound it.
+      return Promise.allSettled([promiseState.pending, hostOperation]).then(cancelBookmark);
     };
     // Browser-only frame-pump policy. Keep RAF as the sole scheduler, but use
     // its display-synchronised timestamp to limit how often the WASM main loop

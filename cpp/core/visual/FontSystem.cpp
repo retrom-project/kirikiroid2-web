@@ -3,7 +3,7 @@
 #include "tjsCommHead.h"
 
 #include "FontSystem.h"
-#include "StringUtil.h"
+#include "FontNameCandidates.h"
 #include "MsgIntf.h"
 #include <vector>
 #include "ConfigManager/IndividualConfigManager.h"
@@ -72,10 +72,13 @@ ttstr FontSystem::GetBeingFont(ttstr fonts) {
             ttstr fontname;
             int pos = fonts.IndexOf(TJS_W(","));
             if(pos != -1) {
-                fontname = Trim(fonts.SubString(0, pos));
+                const auto candidate = fonts.SubString(0, pos);
+                const auto trimmed = FontNameCandidates::trim({candidate.c_str(), static_cast<std::size_t>(candidate.length())});
+                fontname = ttstr(trimmed.data(), trimmed.size());
                 fonts = fonts.SubString(pos + 1, -1);
             } else {
-                fontname = Trim(fonts);
+                const auto trimmed = FontNameCandidates::trim({fonts.c_str(), static_cast<std::size_t>(fonts.length())});
+                fontname = ttstr(trimmed.data(), trimmed.size());
                 fonts = TJS_W("");
             }
 

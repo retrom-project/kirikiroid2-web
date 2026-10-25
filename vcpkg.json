@@ -90,6 +90,13 @@
       "platform": "!emscripten"
     },
     "spdlog",
+    {
+      "name": "sqlite3",
+      "features": [
+        "omit-load-extension"
+      ],
+      "platform": "emscripten"
+    },
     "uchardet",
     "unrar",
     {

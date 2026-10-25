@@ -399,7 +399,11 @@ public:
     void SetPosition(tjs_int, tjs_int) {}
     void SetBorderStyle(tTVPBorderStyle) {}
     void SetStayOnTop(bool) {}
+#ifdef __EMSCRIPTEN__
+    virtual void SetFullScreenMode(bool) {}
+#else
     void SetFullScreenMode(bool) {}
+#endif
     tjs_int GetLeft() { return 0; }
     tjs_int GetTop() { return 0; }
     tjs_int GetMinWidth() { return 0; }
@@ -409,7 +413,11 @@ public:
     tjs_int GetInnerWidth() { return GetWidth(); }
     tjs_int GetInnerHeight() { return GetHeight(); }
     bool GetStayOnTop() { return false; }
+#ifdef __EMSCRIPTEN__
+    virtual bool GetFullScreenMode() { return false; }
+#else
     bool GetFullScreenMode() { return false; }
+#endif
     [[nodiscard]] tTVPBorderStyle GetBorderStyle() const { return bsNone; }
     void SetTrapKey(bool b) {}
     [[nodiscard]] bool GetTrapKey() const { return false; }

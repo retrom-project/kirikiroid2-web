@@ -21,16 +21,31 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+      - name: Install native regression dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfreetype-dev libsqlite3-dev pkg-config
       - name: Validate fork source contract
         run: |
           python3 .github/rpg-runtime/verify-source.py
           python3 -m unittest discover -s tools/xp3 -p 'test_*.py'
           python3 .github/rpg-runtime/test-bookmark-bridge.py
+          python3 .github/rpg-runtime/test-game-save-observer.py
+          node tests/web/host_game_save_notification.test.mjs
           python3 .github/rpg-runtime/test-display-monitors.py
+          python3 .github/rpg-runtime/test-window-placement.py
+          python3 .github/rpg-runtime/test-font-candidates.py
+          python3 .github/rpg-runtime/test-font-discovery.py
+          python3 .github/rpg-runtime/test-font-baseline.py
+          python3 .github/rpg-runtime/test-window-presentation.py
+          python3 .github/rpg-runtime/test-sqlite.py
+          node tests/web/sqlite_vlfs_publish.test.mjs
           node tests/web/jspi_mainloop_scheduler.test.mjs
           node .github/rpg-runtime/test-vlfs.mjs
       - name: Build Web assets
         run: .github/rpg-runtime/build-web.sh "$RUNNER_TEMP/rpg-runtime-output"
+      - name: Validate SQLite TJS constructor binding
+        run: python3 .github/rpg-runtime/test-sqlite-binding.py
       - name: Validate candidate assets
         run: |
           python3 .github/rpg-runtime/verify-release.py \

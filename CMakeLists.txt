@@ -135,14 +135,14 @@ elseif(WEB)
         "$<$<CONFIG:Debug>:SHELL:-s ASSERTIONS=2>"
         "SHELL:-s FORCE_FILESYSTEM=1"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
-        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_krkr2_host_bookmark_is_ready','_krkr2_host_load_bookmark_is_ready','_krkr2_host_save_bookmark','_krkr2_host_load_bookmark','_krkr2_host_load_bookmark_state','_krkr2_host_cancel_bookmark_load']"
+        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_krkr2_host_bookmark_is_ready','_krkr2_host_load_bookmark_is_ready','_krkr2_host_save_bookmark','_krkr2_host_load_bookmark','_krkr2_host_load_bookmark_state','_krkr2_host_cancel_bookmark_load','_krkr2_host_observe_game_saves','_krkr2_host_flush_game_saves']"
         "SHELL:-s PTHREAD_POOL_SIZE=${KRKR2_WEB_PTHREAD_POOL_SIZE}"
         "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=1048576"
         # VirtualLazyFS: 主线程文件读经 JSPI 挂起等待 JS 异步供数
         # （Chromium 137+ / WebKit 26.4+，即 Safari 27 beta；EM_ASYNC_JS 导入
         # 自动包 WebAssembly.Suspending）。
-        # krkr2_main_loop_tick 是项目显式加入 JSPI_EXPORTS 的入口（cocos 主循环
-        # tick，见 vcpkg cocos2dx patch CCApplication-emscripten.cpp）。Emscripten
+        # 主循环 tick 和 GAME_SAVE 元数据刷新都是显式 JSPI 入口；刷新由 Host
+        # 暂停并排空 tick 后调用，也可能读取冷资源。Emscripten
         # 6.0.9 还会自动加入 main/__main_argc_argv，并单独用 promising 包装
         # pthread 入口；其它 JS 回调入口是否可挂起仍需逐条检查。glue 的
         # getWasmTableEntry 会给"同时是 JSPI_EXPORTS 导出"的函数指针表项
@@ -150,7 +150,7 @@ elseif(WEB)
         # table.get/export 身份等价，需用户库覆盖 set_main_loop_arg 兜底，
         # 见 jspi_jsc_mainloop_fix.js。
         "SHELL:-s JSPI=1"
-        "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick']"
+        "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick','krkr2_host_flush_game_saves']"
         "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js"
         "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.js"
         -Wl,--wrap=pthread_create

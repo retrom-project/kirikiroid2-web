@@ -35,12 +35,23 @@ release rules supplement rather than replace it.
 
 ## Quality and releases
 
+- Before changing an API, ABI or save layout, establish whether that contract has
+  actually been released, used in production or promised to a consumer. Keep the
+  selected contract identifier while a feature is still under development;
+  PFB commits and test saves do not justify V2, parallel compatibility paths or
+  migration logic. Update the current implementation and its callers together.
+  This does not authorize discarding data or changing immutable release tags.
 - Before pushing, run `python3 .github/rpg-runtime/verify-source.py`.
 - Changes that affect Web output must also run
   `.github/rpg-runtime/build-web.sh <empty-output-directory>` followed by
   `.github/rpg-runtime/verify-release.py` with a valid candidate identity.
 - PRs to `retrom/g13dda190f837` must pass
   `.github/workflows/rpg-runtime-quality.yml`.
+- Enable the Retrom quality and release workflows for this fork. Keep inherited
+  upstream build, format and differential/multi-platform workflows disabled in
+  repository Actions settings: they target upstream branches/toolchains and are
+  not part of the Retrom delivery path. Do not disable or skip required Retrom
+  quality checks to save runner time.
 - Release tags are `retrom-core-g13dda190f837-rN`, with optional `-rc.N` only
   for integration candidates. Increment `rN` for any source, build, asset, or
   adapter-contract change on this baseline.

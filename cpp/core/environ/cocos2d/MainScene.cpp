@@ -22,6 +22,7 @@
 #else
 #include <emscripten.h>
 #include <emscripten/html5.h>
+#include "../web/WindowPresentation.h"
 #endif
 #include "2d/CCCamera.h"
 #include "ConfigManager/IndividualConfigManager.h"
@@ -392,6 +393,9 @@ class TVPWindowLayer : public cocos2d::extension::ScrollView,
     tTJSNI_Window *TJSNativeInstance;
     tjs_int ActualZoomDenom; // Zooming factor denominator (actual)
     tjs_int ActualZoomNumer; // Zooming factor numerator (actual)
+#ifdef __EMSCRIPTEN__
+    KirikiriWeb::FullScreenWindow WebFullScreen;
+#endif
     // Reference-binary ownership is through Node::_children, not these raw
     // observers: addChild retains PrimaryLayerArea, whose addChild in turn
     // retains DrawSprite.  Node destruction releases both container edges.
@@ -984,6 +988,20 @@ public:
             DrawSprite->setPosition(Vec2(0, size.height));
             PrimaryLayerArea->setContentSize(size);
             PrimaryLayerArea->setScale(scale);
+#ifdef __EMSCRIPTEN__
+            PrimaryLayerArea->setPosition(Vec2::ZERO);
+            if(WebFullScreen.enabled()) {
+                // Put the paint origin and input origin on the same node.
+                // Fitting the unscaled window client while applying its old
+                // zoom here would shrink the primary area a second time.
+                const auto fit = KirikiriWeb::fitFullScreen(
+                    {static_cast<int>(getContentSize().width), static_cast<int>(getContentSize().height)},
+                    {LayerWidth, LayerHeight});
+                PrimaryLayerArea->setContentSize(Size(LayerWidth, LayerHeight));
+                PrimaryLayerArea->setPosition(Vec2(fit.x, fit.y));
+                DrawSprite->setPosition(Vec2(0, LayerHeight));
+            }
+#endif
             if(lowLevelLogoTraceEnabled()) {
                 if(auto logger = spdlog::get("core")) {
                 const auto spriteRect = DrawSprite->getTextureRect();
@@ -1009,6 +1027,18 @@ public:
     void RecalcPaintBox() {
         if(!LayerWidth || !LayerHeight)
             return;
+#ifdef __EMSCRIPTEN__
+        if(WebFullScreen.enabled()) {
+            const auto view = getViewSize();
+            const auto fit = KirikiriWeb::fitFullScreen(
+                {static_cast<int>(view.width), static_cast<int>(view.height)},
+                {LayerWidth, LayerHeight});
+            if(!fit.valid()) return;
+            setContentSize(view);
+            ActualZoomNumer = fit.numer;
+            ActualZoomDenom = fit.denom;
+        }
+#endif
         ResetDrawSprite();
         cocos2d::Size size = getViewSize();
         cocos2d::Size contSize = getContentSize();
@@ -1050,6 +1080,14 @@ public:
     }
 
     void SetWidth(tjs_int w) override {
+#ifdef __EMSCRIPTEN__
+        if(WebFullScreen.enabled()) {
+            auto normal = WebFullScreen.normalSize();
+            normal.width = w;
+            WebFullScreen.resizeNormal(normal);
+            return;
+        }
+#endif
         cocos2d::Size size = getContentSize();
         size.width = w;
         setContentSize(size);
@@ -1057,6 +1095,14 @@ public:
     }
 
     void SetHeight(tjs_int h) override {
+#ifdef __EMSCRIPTEN__
+        if(WebFullScreen.enabled()) {
+            auto normal = WebFullScreen.normalSize();
+            normal.height = h;
+            WebFullScreen.resizeNormal(normal);
+            return;
+        }
+#endif
         cocos2d::Size size = getContentSize();
         size.height = h;
         setContentSize(size);
@@ -1064,6 +1110,12 @@ public:
     }
 
     void SetSize(tjs_int w, tjs_int h) override {
+#ifdef __EMSCRIPTEN__
+        if(WebFullScreen.enabled()) {
+            WebFullScreen.resizeNormal({w, h});
+            return;
+        }
+#endif
         setContentSize(cocos2d::Size(w, h));
         RecalcPaintBox();
     }
@@ -1084,10 +1136,33 @@ public:
 
     tjs_int GetHeight() const override { return getContentSize().height; }
 
+#ifdef __EMSCRIPTEN__
+    void SetFullScreenMode(bool enabled) override {
+        const auto current = getContentSize();
+        if(!WebFullScreen.setEnabled(enabled,
+                {static_cast<int>(current.width), static_cast<int>(current.height)})) return;
+        if(!enabled) {
+            const auto normal = WebFullScreen.normalSize();
+            setContentSize(Size(normal.width, normal.height));
+            ActualZoomNumer = ZoomNumer;
+            ActualZoomDenom = ZoomDenom;
+        }
+        RecalcPaintBox();
+    }
+
+    bool GetFullScreenMode() override { return WebFullScreen.enabled(); }
+#endif
+
     void SetZoom(tjs_int numer, tjs_int denom) override {
         AdjustNumerAndDenom(numer, denom);
         ZoomNumer = numer;
         ZoomDenom = denom;
+#ifdef __EMSCRIPTEN__
+        if(WebFullScreen.enabled()) {
+            RecalcPaintBox();
+            return;
+        }
+#endif
         ActualZoomDenom = denom;
         ActualZoomNumer = numer;
         RecalcPaintBox();
