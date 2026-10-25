@@ -147,6 +147,11 @@ void FreeTypeFontRasterizer::GetTextExtent(tjs_char ch, tjs_int &w,
             w = Face->GetHeight();
             h = w;
         }
+#ifdef __EMSCRIPTEN__
+        // vertAdvance is a vertical-writing advance, not the pixel height
+        // needed by a horizontal text buffer.
+        h = Face->GetLineHeight();
+#endif
     }
 }
 //---------------------------------------------------------------------------

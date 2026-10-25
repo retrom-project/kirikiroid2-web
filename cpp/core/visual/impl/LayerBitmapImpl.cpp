@@ -1447,6 +1447,7 @@ void tTVPNativeBaseBitmap::GetTextSize(const ttstr &text) {
 
     if(text != CachedText) {
         CachedText = text;
+        tjs_int height = std::abs(Font.Height);
 
         if(PrerenderedFont) {
             tjs_uint width = 0;
@@ -1460,11 +1461,14 @@ void tTVPNativeBaseBitmap::GetTextSize(const ttstr &text) {
                     tjs_int w, h;
                     GetCurrentRasterizer()->GetTextExtent(*buf, w, h);
                     width += w;
+#ifdef __EMSCRIPTEN__
+                    height = std::max(height, h);
+#endif
                 }
                 buf++;
             }
             TextWidth = width;
-            TextHeight = std::abs(Font.Height);
+            TextHeight = height;
         } else {
             tjs_uint width = 0;
             const tjs_char *buf = text.c_str();
@@ -1473,10 +1477,13 @@ void tTVPNativeBaseBitmap::GetTextSize(const ttstr &text) {
                 tjs_int w, h;
                 GetCurrentRasterizer()->GetTextExtent(*buf, w, h);
                 width += w;
+#ifdef __EMSCRIPTEN__
+                height = std::max(height, h);
+#endif
                 buf++;
             }
             TextWidth = width;
-            TextHeight = std::abs(Font.Height);
+            TextHeight = height;
         }
     }
 }

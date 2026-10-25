@@ -12,6 +12,7 @@
 //---------------------------------------------------------------------------
 #ifndef _FREETYPE_H_
 #define _FREETYPE_H_
+#include <cstdint>
 
 #include "CharacterData.h"
 #include "FreeTypeFace.h"
@@ -79,6 +80,13 @@ public:
     [[nodiscard]] const ttstr &GetFontName() const { return FontName; }
 
     tjs_int GetHeight() { return Height; }
+    [[nodiscard]] tjs_int GetLineHeight() const {
+        // The requested EM size is not the physical font cell height. A
+        // caller allocating a text image also needs ascent and descent.
+        const auto &metrics = FTFace->size->metrics;
+        const tjs_int height = FT_PosToInt(metrics.ascender - metrics.descender);
+        return height > metrics.y_ppem ? height : metrics.y_ppem;
+    }
     void SetHeight(int height);
 
     void SetOption(tjs_uint32 opt) { Options |= opt; }
@@ -97,7 +105,14 @@ public:
     [[nodiscard]] tjs_int GetAscent() const {
         tjs_int ppem = FTFace->size->metrics.y_ppem;
         tjs_int upe = FTFace->units_per_EM;
+#ifdef __EMSCRIPTEN__
+        // Hinting snaps the top bearing to whole pixels. Truncating a
+        // fractional ascent can put a valid top scanline above drawText y0.
+        const auto scaled = static_cast<std::int64_t>(LayoutAscent) * ppem;
+        return static_cast<tjs_int>((scaled + (scaled > 0 ? upe - 1 : 0)) / upe);
+#else
         return LayoutAscent * ppem / upe;
+#endif
     }
     void GetUnderline(tjs_int &pos, tjs_int &thickness) const {
         tjs_int ppem = FTFace->size->metrics.y_ppem;
