@@ -35,6 +35,8 @@ def main() -> int:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--check-existing", action="store_true",
+                        help="Verify downloaded files and metadata without rewriting the manifest")
     args = parser.parse_args()
     if TAG.fullmatch(args.tag) is None or COMMIT.fullmatch(args.commit) is None:
         raise SystemExit("RPG_RUNTIME_RELEASE_IDENTITY_INVALID")
@@ -82,10 +84,16 @@ def main() -> int:
         "sourceCommits": {"engine": "13dda190f8370d02b6cf59286a088529b355658c"},
         "tag": args.tag,
     }
-    (args.output / "rpg-runtime-release.json").write_text(
-        json.dumps(metadata, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    manifest = args.output / "rpg-runtime-release.json"
+    if args.check_existing:
+        regular_asset(manifest, 2, 65_536)
+        if json.loads(manifest.read_text(encoding="utf-8")) != metadata:
+            raise SystemExit("RPG_RUNTIME_RELEASE_METADATA_MISMATCH")
+    else:
+        manifest.write_text(
+            json.dumps(metadata, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     return 0
 
 

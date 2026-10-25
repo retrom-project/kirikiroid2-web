@@ -1,0 +1,160 @@
+name: RPG Runtime Web Build
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        type: string
+        required: true
+      build-jobs:
+        type: string
+        default: "4"
+      cold-cache:
+        type: boolean
+        default: false
+      sqlite-binding:
+        type: boolean
+        default: false
+    outputs:
+      artifact-id:
+        value: ${{ jobs.build.outputs.artifact-id }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+    env:
+      KIRIKIRI_BUILD_JOBS: ${{ inputs.build-jobs }}
+      KIRIKIRI_BUILD_TIMINGS: ${{ github.workspace }}/out/kirikiri-build-timings.tsv
+      CCACHE_DIR: ${{ github.workspace }}/out/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 500M
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/out/vcpkg-archives
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install compiler cache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ccache
+      - name: Configure cache keys
+        id: keys
+        env:
+          TOOLCHAIN_HASH: ${{ hashFiles('.github/rpg-runtime/toolchain.env', '.github/rpg-runtime/emscripten-ports.txt') }}
+          DEPENDENCY_HASH: ${{ hashFiles('.github/rpg-runtime/toolchain.env', '.github/rpg-runtime/build-web.sh', 'CMakePresets.json', 'vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/**') }}
+          CACHE_PLATFORM: ${{ runner.os }}-${{ runner.arch }}
+        run: |
+          source .github/rpg-runtime/toolchain.env
+          [[ "$KIRIKIRI_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" "$CCACHE_DIR"
+          {
+            echo "sdk-path=$HOME/.cache/kirikiroid2-runtime/emsdk-$KIRIKIRI_EMSDK_VERSION"
+            echo "sdk=kirikiri-$CACHE_PLATFORM-sdk-$TOOLCHAIN_HASH"
+            echo "dependencies=kirikiri-$CACHE_PLATFORM-vcpkg-$DEPENDENCY_HASH"
+            echo "ccache-prefix=kirikiri-$CACHE_PLATFORM-ccache-$DEPENDENCY_HASH-"
+          } >> "$GITHUB_OUTPUT"
+      - name: Restore SDK and ports
+        if: ${{ !inputs.cold-cache }}
+        id: sdk
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.keys.outputs.sdk-path }}
+          key: ${{ steps.keys.outputs.sdk }}
+      - name: Restore vcpkg binary packages
+        if: ${{ !inputs.cold-cache }}
+        id: dependencies
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.keys.outputs.dependencies }}
+      - name: Restore compiler cache
+        if: ${{ !inputs.cold-cache }}
+        id: ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.keys.outputs.ccache-prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.keys.outputs.ccache-prefix }}
+      - name: Build Web assets
+        id: build
+        run: |
+          set -o pipefail
+          ccache --zero-stats
+          /usr/bin/time -v .github/rpg-runtime/build-web.sh "$RUNNER_TEMP/rpg-runtime-output" \
+            2>&1 | tee "$RUNNER_TEMP/kirikiri-build.log"
+      - name: Save SDK and ports
+        if: ${{ steps.sdk.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.keys.outputs.sdk-path }}
+          key: ${{ steps.keys.outputs.sdk }}
+      - name: Save vcpkg binary packages
+        if: ${{ steps.dependencies.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.keys.outputs.dependencies }}
+      - name: Save compiler cache
+        if: ${{ steps.ccache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.keys.outputs.ccache-prefix }}${{ github.sha }}
+      - name: Validate SQLite TJS constructor binding
+        if: ${{ inputs.sqlite-binding }}
+        run: python3 .github/rpg-runtime/test-sqlite-binding.py
+      - name: Validate and describe assets
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          python3 .github/rpg-runtime/verify-release.py \
+            --output "$RUNNER_TEMP/rpg-runtime-output" \
+            --repository "https://github.com/$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" --commit "$GITHUB_SHA"
+      - name: Upload validated assets
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpg-runtime-kirikiri-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rpg-runtime-output/*
+          if-no-files-found: error
+          retention-days: 7
+      - name: Report timings and cache statistics
+        if: ${{ always() && steps.build.outcome != 'skipped' }}
+        env:
+          SDK_CACHE_HIT: ${{ steps.sdk.outputs.cache-hit }}
+          DEPENDENCY_CACHE_HIT: ${{ steps.dependencies.outputs.cache-hit }}
+          COMPILER_CACHE_HIT: ${{ steps.ccache.outputs.cache-hit }}
+        run: |
+          {
+            echo "### Web build ($KIRIKIRI_BUILD_JOBS compiler jobs)"
+            echo "SDK cache: ${SDK_CACHE_HIT:-miss}; vcpkg cache: ${DEPENDENCY_CACHE_HIT:-miss}; compiler cache: ${COMPILER_CACHE_HIT:-miss}"
+            echo
+            echo '| Phase | Seconds |'
+            echo '| --- | ---: |'
+            if [[ -f "$KIRIKIRI_BUILD_TIMINGS" ]]; then
+              awk -F '\t' '{printf "| %s | %s |\n", $1, $2}' "$KIRIKIRI_BUILD_TIMINGS"
+            fi
+            echo
+            echo '```text'
+            ccache --show-stats --verbose
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload build diagnostics
+        if: ${{ always() && steps.build.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kirikiri-build-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kirikiri-build.log
+            ${{ env.KIRIKIRI_BUILD_TIMINGS }}
+            out/web/release/vcpkg-manifest-install.log
+          if-no-files-found: warn
+          retention-days: 7

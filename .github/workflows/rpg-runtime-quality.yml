@@ -3,7 +3,30 @@ name: RPG Runtime Quality
 on:
   pull_request:
     branches: ["retrom/g13dda190f837"]
+  # Populate the default branch cache when toolchain/dependency inputs change.
+  # PR and tag caches cannot supply another PR or another tag.
+  push:
+    branches: ["retrom/g13dda190f837"]
+    paths:
+      - .github/workflows/rpg-runtime-*.yml
+      - .github/rpg-runtime/build-web.sh
+      - .github/rpg-runtime/toolchain.env
+      - .github/rpg-runtime/emscripten-ports.txt
+      - CMakePresets.json
+      - vcpkg.json
+      - vcpkg-configuration.json
+      - vcpkg/**
   workflow_dispatch:
+    inputs:
+      cold-cache:
+        description: Bypass cache restore to measure a cold build
+        type: boolean
+        default: false
+      build-jobs:
+        description: Parallel core compiler jobs
+        type: choice
+        default: "4"
+        options: ["4", "2"]
 
 permissions:
   contents: read
@@ -13,57 +36,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
+  source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           submodules: recursive
       - name: Install native regression dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libfreetype-dev libsqlite3-dev pkg-config
-      - name: Validate fork source contract
-        run: |
-          python3 .github/rpg-runtime/verify-source.py
-          python3 -m unittest discover -s tools/xp3 -p 'test_*.py'
-          python3 .github/rpg-runtime/test-bookmark-bridge.py
-          python3 .github/rpg-runtime/test-game-save-observer.py
-          python3 .github/rpg-runtime/test-native-exit.py
-          node tests/web/host_game_save_notification.test.mjs
-          python3 .github/rpg-runtime/test-display-monitors.py
-          python3 .github/rpg-runtime/test-window-placement.py
-          python3 .github/rpg-runtime/test-font-candidates.py
-          python3 .github/rpg-runtime/test-font-discovery.py
-          python3 .github/rpg-runtime/test-font-baseline.py
-          python3 .github/rpg-runtime/test-window-presentation.py
-          python3 .github/rpg-runtime/test-sqlite.py
-          node tests/web/sqlite_vlfs_publish.test.mjs
-          node tests/web/jspi_mainloop_scheduler.test.mjs
-          node .github/rpg-runtime/test-vlfs.mjs
-      - name: Build Web assets
-        run: .github/rpg-runtime/build-web.sh "$RUNNER_TEMP/rpg-runtime-output"
-      - name: Validate SQLite TJS constructor binding
-        run: python3 .github/rpg-runtime/test-sqlite-binding.py
-      - name: Validate candidate assets
+      - name: Validate source and native regressions
+        run: .github/rpg-runtime/check-source.sh
+  web:
+    needs: source
+    uses: ./.github/workflows/rpg-runtime-build.yml
+    with:
+      release-tag: retrom-core-g13dda190f837-r1-rc.1
+      sqlite-binding: true
+      cold-cache: ${{ inputs.cold-cache || false }}
+      build-jobs: ${{ inputs.build-jobs || '4' }}
+  candidate:
+    needs: web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.web.outputs.artifact-id }}
+          path: ${{ runner.temp }}/rpg-runtime-output
+          merge-multiple: true
+      - name: Check downloaded candidate identity and integrity
         run: |
           python3 .github/rpg-runtime/verify-release.py \
             --output "$RUNNER_TEMP/rpg-runtime-output" \
             --repository "https://github.com/$GITHUB_REPOSITORY" \
             --tag retrom-core-g13dda190f837-r1-rc.1 \
-            --commit "$GITHUB_SHA"
-      - name: Upload integration candidate
-        uses: actions/upload-artifact@v4
-        with:
-          name: rpg-runtime-kirikiri-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/rpg-runtime-output/index.js
-            ${{ runner.temp }}/rpg-runtime-output/index.wasm
-            ${{ runner.temp }}/rpg-runtime-output/vlfs.js
-            ${{ runner.temp }}/rpg-runtime-output/assets.zip
-            ${{ runner.temp }}/rpg-runtime-output/LICENSE
-            ${{ runner.temp }}/rpg-runtime-output/rpg-runtime-release.json
-          if-no-files-found: error
-          retention-days: 7
+            --commit "$GITHUB_SHA" --check-existing
+  # Preserve the existing required status name, and fail on skipped dependencies.
+  quality:
+    needs: [source, web, candidate]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every quality job
+        env:
+          SOURCE_RESULT: ${{ needs.source.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+        run: |
+          test "$SOURCE_RESULT" = success
+          test "$WEB_RESULT" = success
+          test "$CANDIDATE_RESULT" = success
