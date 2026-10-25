@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix="kirikiri-game-save-test-") as directory:
     scratch = Path(directory)
     for name in ("ScriptMgnIntf.h", "base/CCDirector.h", "base/CCScheduler.h", "tjsObject.h",
-                 "tjsCommHead.h", "emscripten.h"):
+                 "tjsCommHead.h", "SysInitIntf.h", "emscripten.h"):
         header = scratch / name
         header.parent.mkdir(parents=True, exist_ok=True)
         header.touch()

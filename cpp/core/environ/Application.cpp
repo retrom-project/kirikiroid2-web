@@ -19,6 +19,9 @@
 #include "SystemIntf.h"
 
 #include "Exception.h"
+#ifdef __EMSCRIPTEN__
+#include "web/HostNativeExit.h"
+#endif
 // #include "Resource.h"
 #include "SystemControl.h"
 // #include "MouseCursor.h"
@@ -515,8 +518,15 @@ void tTVPApplication::ShowException(const ttstr &e) {
 void tTVPApplication::Run() {
     try {
         if(TVPTerminated) {
+#ifdef __EMSCRIPTEN__
+            // Web shutdown is completed by the Host after this tick drains;
+            // native platforms keep their original synchronous teardown.
+            TVPWebRequestNativeExit(TVPTerminateCode);
+            return;
+#else
             TVPSystemUninit();
             TVPExitApplication(TVPTerminateCode);
+#endif
         }
         //	TVPBreathe();
         ProcessMessages();

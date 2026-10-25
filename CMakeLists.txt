@@ -135,7 +135,7 @@ elseif(WEB)
         "$<$<CONFIG:Debug>:SHELL:-s ASSERTIONS=2>"
         "SHELL:-s FORCE_FILESYSTEM=1"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
-        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_krkr2_host_bookmark_is_ready','_krkr2_host_load_bookmark_is_ready','_krkr2_host_save_bookmark','_krkr2_host_load_bookmark','_krkr2_host_load_bookmark_state','_krkr2_host_cancel_bookmark_load','_krkr2_host_observe_game_saves','_krkr2_host_flush_game_saves']"
+        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_krkr2_host_bookmark_is_ready','_krkr2_host_load_bookmark_is_ready','_krkr2_host_save_bookmark','_krkr2_host_load_bookmark','_krkr2_host_load_bookmark_state','_krkr2_host_cancel_bookmark_load','_krkr2_host_observe_game_saves','_krkr2_host_flush_game_saves','_krkr2_host_finalize_native_exit']"
         "SHELL:-s PTHREAD_POOL_SIZE=${KRKR2_WEB_PTHREAD_POOL_SIZE}"
         "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=1048576"
         # VirtualLazyFS: 主线程文件读经 JSPI 挂起等待 JS 异步供数
@@ -150,7 +150,7 @@ elseif(WEB)
         # table.get/export 身份等价，需用户库覆盖 set_main_loop_arg 兜底，
         # 见 jspi_jsc_mainloop_fix.js。
         "SHELL:-s JSPI=1"
-        "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick','krkr2_host_flush_game_saves']"
+        "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick','krkr2_host_flush_game_saves','krkr2_host_finalize_native_exit']"
         "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js"
         "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.js"
         -Wl,--wrap=pthread_create

@@ -50,6 +50,7 @@ def main() -> int:
         "_krkr2_host_cancel_bookmark_load",
         "_krkr2_host_observe_game_saves",
         "_krkr2_host_flush_game_saves",
+        "_krkr2_host_finalize_native_exit",
         "_krkr2_host_bookmark_is_ready", "_krkr2_host_save_bookmark",
         "_krkr2_host_load_bookmark", "_krkr2_host_load_bookmark_state",
     ))
@@ -60,6 +61,7 @@ def main() -> int:
         "krkr2_host_cancel_bookmark_load",
         "krkr2_host_observe_game_saves", "onGameSave",
         "krkr2_host_flush_game_saves", "saveSystemVariables",
+        "krkr2_host_finalize_native_exit", "onNativeExitRequested",
         "krkr2_host_bookmark_is_ready", "krkr2_host_save_bookmark",
         "krkr2_host_load_bookmark", "krkr2_host_load_bookmark_state",
         "findKagMethod", "kagReachedSavePoint", "scheduleKagLoad",

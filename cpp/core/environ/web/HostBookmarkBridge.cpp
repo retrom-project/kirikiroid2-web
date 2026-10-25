@@ -8,6 +8,8 @@
 #include "base/CCScheduler.h"
 #include "tjsObject.h"
 #include "tjsCommHead.h"
+#include "SysInitIntf.h"
+#include "HostNativeExit.h"
 
 #include <atomic>
 #include <cstdint>
@@ -42,6 +44,15 @@ EM_JS(void, krkr2_host_notify_game_save, (int phase, int id, int success), {
 
 extern bool TVPStartupSuccess;
 
+EM_JS(void, krkr2_host_notify_native_exit, (int status), {
+    try {
+        var callback = Module['onNativeExitRequested'];
+        if (typeof callback === 'function') callback(status);
+    } catch (error) {
+        console.warn('[native-exit] Host notification failed', error);
+    }
+});
+
 namespace {
 constexpr int kBookmarkSucceeded = 0;
 constexpr int kScriptUnavailable = -1;
@@ -54,6 +65,9 @@ constexpr int kLoadIdle = 0;
 constexpr int kLoadPending = 1;
 constexpr int kLoadSucceeded = 2;
 std::atomic<int> load_state{kLoadIdle};
+bool native_exit_requested = false;
+bool native_exit_completed = false;
+int native_exit_status = 0;
 
 class ScriptDispatch final {
 public:
@@ -230,9 +244,14 @@ public:
             TJS_W("saveBookMarkToFile"), nullptr, &callback, kag_.get()) == TJS_S_OK;
     }
 
-    bool detach() noexcept {
+    bool detach(bool closing = false) noexcept {
         if(detached_) return true;
         try {
+            if(closing && kag_->IsValid(0, nullptr, nullptr, kag_.get()) == TJS_S_FALSE) {
+                detached_ = true;
+                static_cast<GameSaveObserver *>(observer_.get())->deactivate();
+                return true;
+            }
             tTJSVariant current;
             const auto status = kag_->PropGet(TJS_IGNOREPROP,
                 TJS_W("saveBookMarkToFile"), nullptr, &current, kag_.get());
@@ -262,7 +281,7 @@ std::unique_ptr<GameSaveWatch> game_save_watch;
 int observeGameSaves() noexcept {
     // No script FuncCall/getter/setter is evaluated here. Only inspect and
     // replace an ordinary function member between fully drained engine ticks.
-    if(!TVPStartupSuccess || game_save_depth != 0 || game_save_flushing ||
+    if(native_exit_requested || !TVPStartupSuccess || game_save_depth != 0 || game_save_flushing ||
        !krkr2_host_main_loop_is_idle()) return 0;
     try {
         ScriptDispatch script;
@@ -804,6 +823,22 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
 }
 } // namespace
 
+void TVPWebRequestNativeExit(int status) {
+    if(native_exit_completed) return;
+    if(native_exit_requested) {
+        // An actual failure during pending normal shutdown must still reach
+        // the Host; duplicate normal requests do not restart finalization.
+        if(native_exit_status == 0 && status != 0) {
+            native_exit_status = status;
+            krkr2_host_notify_native_exit(status);
+        }
+        return;
+    }
+    native_exit_requested = true;
+    native_exit_status = status;
+    krkr2_host_notify_native_exit(status);
+}
+
 // 0: startup/tick/method not ready; 1: observing the current KAG save method;
 // -3: member read/write/detach failed; -5: TJS lookup/installation exception.
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_observe_game_saves() {
@@ -816,19 +851,23 @@ extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_observe_game_saves() {
 // creates no bookmark and supplies no progress witness. The JSPI export retains
 // these closures if the native callback reads a cold resource while flushing.
 // 0: no callback; 1: flushed; negative: failed (never silently export old data).
-extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_flush_game_saves() {
-    if(!TVPStartupSuccess || game_save_depth != 0 || game_save_flushing ||
+static int flushNativeSystemData(bool closing) {
+    if(!TVPStartupSuccess) return closing ? 0 : kBookmarkRejected;
+    if(game_save_depth != 0 || game_save_flushing ||
        !krkr2_host_main_loop_is_idle()) return kBookmarkRejected;
     try {
         const GameSaveFlushScope flushing;
         ScriptDispatch script;
-        if(!script.value) return kScriptUnavailable;
+        if(!script.value) return closing ? 0 : kScriptUnavailable;
         tTJSVariant kag_value, method, result;
         if(script.value->PropGet(TJS_IGNOREPROP, TJS_W("kag"), nullptr,
                                  &kag_value, script.value) != TJS_S_OK ||
            kag_value.Type() != tvtObject || !kag_value.AsObjectNoAddRef())
             return kKagUnavailable;
         auto *kag = kag_value.AsObjectNoAddRef();
+        // Games may invalidate their own KAG while accepting window close.
+        // Only confirmed shutdown can skip that already unavailable receiver.
+        if(closing && kag->IsValid(0, nullptr, nullptr, kag) == TJS_S_FALSE) return 0;
         const auto status = kag->PropGet(TJS_IGNOREPROP,
             TJS_W("saveSystemVariables"), nullptr, &method, kag);
         if(status == TJS_E_MEMBERNOTFOUND) return 0;
@@ -842,6 +881,33 @@ extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_flush_game_saves() {
         return result.Type() == tvtVoid ||
             (result.Type() == tvtInteger && result.operator bool())
             ? 1 : kBookmarkRejected;
+    } catch(...) {
+        return kScriptException;
+    }
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_flush_game_saves() {
+    if(native_exit_requested) return kBookmarkRejected;
+    return flushNativeSystemData(false);
+}
+
+// JSPI export: invoked only after the request callback returns and the active
+// frame drains. Keep VLFS and TJS alive through the potentially suspended flush;
+// detach while the receiver is still valid, then run ordinary native teardown.
+extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_finalize_native_exit() {
+    if(native_exit_completed) return kBookmarkSucceeded;
+    if(!native_exit_requested || native_exit_status != 0 || game_save_depth != 0 ||
+       game_save_flushing || !krkr2_host_main_loop_is_idle()) return kBookmarkRejected;
+    try {
+        const int flushed = flushNativeSystemData(true);
+        if(flushed < 0) return flushed;
+        if(game_save_watch && !game_save_watch->detach(true)) return kMethodUnavailable;
+        game_save_watch.reset();
+        bootstrap_load.reset();
+        pending_load.reset();
+        TVPSystemUninit();
+        native_exit_completed = true;
+        return kBookmarkSucceeded;
     } catch(...) {
         return kScriptException;
     }
