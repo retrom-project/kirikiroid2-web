@@ -44,6 +44,17 @@ static tTJSCriticalSection _NoMemCallBackCS;
 static void *_reservedMem = malloc(1024 * 1024 * 4); // 4M reserved mem
 static bool _project_startup = false;
 
+#ifdef __EMSCRIPTEN__
+// Application startup and frame dispatch also catch script errors outside the
+// event wrappers. Respect the game's handler before reporting to the Web host;
+// a native message box followed by exit(0) cannot represent a failed Web game.
+template <typename Error>
+static void TVPHandleWebApplicationScriptException(Error &error) {
+    if(!TVPSystemUninitCalled && !TVPProcessUnhandledException(error))
+        TVPShowScriptException(error);
+}
+#endif
+
 static void _do_compact() { TVPDeliverCompactEvent(TVP_COMPACT_LEVEL_MAX); }
 
 static void _no_memory_cb() {
@@ -361,6 +372,14 @@ bool tTVPApplication::StartApplication(ttstr path) {
         TVPOnError();
         if(!TVPSystemUninitCalled)
             ShowException(exception.what());
+#ifdef __EMSCRIPTEN__
+    } catch(TJS::eTJSScriptException &e) {
+        TVPHandleWebApplicationScriptException(e);
+    } catch(TJS::eTJSScriptError &e) {
+        TVPHandleWebApplicationScriptException(e);
+    } catch(TJS::eTJS &e) {
+        TVPHandleWebApplicationScriptException(e);
+#else
     } catch(const TJS::eTJSScriptError &e) {
         TVPOnError();
         if(!TVPSystemUninitCalled) {
@@ -386,6 +405,7 @@ bool tTVPApplication::StartApplication(ttstr path) {
         TVPOnError();
         if(!TVPSystemUninitCalled)
             ShowException(e.GetMessage());
+#endif
     } catch(const std::exception &e) {
         ShowException(e.what());
     } catch(const char *e) {
@@ -511,6 +531,14 @@ void tTVPApplication::Run() {
         TVPOnError();
         if(!TVPSystemUninitCalled)
             ShowException(exception.what());
+#ifdef __EMSCRIPTEN__
+    } catch(TJS::eTJSScriptException &e) {
+        TVPHandleWebApplicationScriptException(e);
+    } catch(TJS::eTJSScriptError &e) {
+        TVPHandleWebApplicationScriptException(e);
+    } catch(TJS::eTJS &e) {
+        TVPHandleWebApplicationScriptException(e);
+#else
     } catch(const TJS::eTJSScriptError &e) {
         TVPOnError();
         if(!TVPSystemUninitCalled) {
@@ -536,6 +564,7 @@ void tTVPApplication::Run() {
         TVPOnError();
         if(!TVPSystemUninitCalled)
             ShowException(e.GetMessage());
+#endif
     } catch(const std::exception &e) {
         ShowException(e.what());
     } catch(const char *e) {
