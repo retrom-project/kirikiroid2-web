@@ -58,6 +58,7 @@ jobs:
             echo "sdk-path=$HOME/.cache/kirikiroid2-runtime/emsdk-$KIRIKIRI_EMSDK_VERSION"
             echo "sdk=kirikiri-$CACHE_PLATFORM-sdk-$TOOLCHAIN_HASH"
             echo "dependencies=kirikiri-$CACHE_PLATFORM-vcpkg-$DEPENDENCY_HASH"
+            echo "dependency-prefix=kirikiri-$CACHE_PLATFORM-vcpkg-"
             echo "ccache-prefix=kirikiri-$CACHE_PLATFORM-ccache-$DEPENDENCY_HASH-"
           } >> "$GITHUB_OUTPUT"
       - name: Restore SDK and ports
@@ -74,6 +75,7 @@ jobs:
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: ${{ steps.keys.outputs.dependencies }}
+          restore-keys: ${{ steps.keys.outputs.dependency-prefix }}
       - name: Restore compiler cache
         if: ${{ !inputs.cold-cache }}
         id: ccache
@@ -132,10 +134,14 @@ jobs:
           SDK_CACHE_HIT: ${{ steps.sdk.outputs.cache-hit }}
           DEPENDENCY_CACHE_HIT: ${{ steps.dependencies.outputs.cache-hit }}
           COMPILER_CACHE_HIT: ${{ steps.ccache.outputs.cache-hit }}
+          COMPILER_CACHE_KEY: ${{ steps.ccache.outputs.cache-matched-key }}
         run: |
+          set -o pipefail
+          ccache --show-stats --verbose | tee "$RUNNER_TEMP/kirikiri-ccache-stats.txt"
           {
             echo "### Web build ($KIRIKIRI_BUILD_JOBS compiler jobs)"
-            echo "SDK cache: ${SDK_CACHE_HIT:-miss}; vcpkg cache: ${DEPENDENCY_CACHE_HIT:-miss}; compiler cache: ${COMPILER_CACHE_HIT:-miss}"
+            echo "Archive exact hits: SDK ${SDK_CACHE_HIT:-miss}; vcpkg ${DEPENDENCY_CACHE_HIT:-miss}; compiler ${COMPILER_CACHE_HIT:-miss}"
+            echo "Compiler archive restored from: ${COMPILER_CACHE_KEY:-none}"
             echo
             echo '| Phase | Seconds |'
             echo '| --- | ---: |'
@@ -144,7 +150,7 @@ jobs:
             fi
             echo
             echo '```text'
-            ccache --show-stats --verbose
+            cat "$RUNNER_TEMP/kirikiri-ccache-stats.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload build diagnostics
@@ -154,6 +160,7 @@ jobs:
           name: kirikiri-build-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/kirikiri-build.log
+            ${{ runner.temp }}/kirikiri-ccache-stats.txt
             ${{ env.KIRIKIRI_BUILD_TIMINGS }}
             out/web/release/vcpkg-manifest-install.log
           if-no-files-found: warn

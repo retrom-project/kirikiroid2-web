@@ -21,6 +21,8 @@ unchanged. A new fork release still requires the next immutable `rN` tag.
   vcpkg still computes package ABIs and restores or rebuilds each dependency.
   The cache key includes toolchain pins, manifests, overlay ports/triplets, the
   build script and CMake presets.
+  When these inputs change, a platform prefix can still supply older archives;
+  vcpkg's ABI checks decide which packages remain reusable.
 - ccache is installed explicitly and uses the existing CMake compiler launchers.
   Its key adds the source SHA to the dependency configuration; a compatible
   prefix restores previous compiler results when the source changes. Linking
@@ -52,7 +54,7 @@ comparison with the previous parallelism; CI defaults to four, while local
 
 The build summary reports SDK/tool preparation, ports, CMake/vcpkg dependencies,
 core compilation/linking, and ccache statistics. The diagnostics artifact also
-contains the full build log, phase timings, vcpkg log and `/usr/bin/time` memory
+contains the full build log, phase timings, compiler-cache statistics, vcpkg log and `/usr/bin/time` memory
 statistics. Inspect both Actions cache hits and vcpkg's restored package count:
 restoring an archive alone does not prove its package ABIs matched.
 
