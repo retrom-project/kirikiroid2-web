@@ -213,3 +213,79 @@ for (const [name, state, expected] of [
       {__krkr2MainLoopPromiseState: state}), expected, name);
 }
 console.log("Native bookmark idle boundary tests passed");
+
+// Emscripten exposes pauseMainLoop to the host. Pausing must prevent the next
+// frame immediately, but its completion must retain a currently suspended tick
+// without setting the terminal stopping flag used by bookmark readiness.
+{
+  let finishTick;
+  const tick = new Promise(resolve => { finishTick = resolve; });
+  const loop = {func: null, scheduler: null, pause() { this.scheduler = null; }};
+  const instance = {
+    pauseMainLoop() { loop.pause(); },
+    _krkr2_host_cancel_bookmark_load() { assert.fail("ordinary pause cannot cancel the load observer"); },
+  };
+  let api;
+  const sandbox = vm.createContext({
+    addToLibrary(value) { api = value; }, MainLoop: loop, Module: instance,
+    setMainLoop(fn) { loop.func = fn; loop.scheduler = () => {}; },
+    handleException(error) { throw error; },
+    wasmTable: {get() { return () => {}; }},
+    WebAssembly: {promising() { return () => tick; }},
+    URLSearchParams, performance: {now: () => 0}, location: {search: ""},
+    requestAnimationFrame() {}, Promise, Map, Number, Object, document: {},
+  });
+  vm.runInContext(source, sandbox);
+  api.emscripten_set_main_loop_arg(1, 0, 0, false);
+  loop.func();
+  loop.scheduler();
+  let paused = false;
+  const pausing = Promise.resolve(instance.pauseMainLoop()).then(() => { paused = true; });
+  assert.equal(loop.scheduler, null, "pause stops scheduling synchronously");
+  await Promise.resolve();
+  assert.equal(paused, false, "pause cannot finish while the tick still owns a Wasm stack");
+  assert.equal(sandbox.__krkr2MainLoopPromiseState.stopping, false,
+      "ordinary pause must leave bookmark capture and later resume available");
+  finishTick();
+  await pausing;
+  assert.equal(sandbox.__krkr2MainLoopPromiseState.pending, null);
+  assert.equal(paused, true);
+}
+console.log("JSPI nonterminal pause/drain tests passed");
+
+// A checkpoint export can own a suspended Wasm stack while the frame loop is
+// already paused. Termination must not reenter TJS to cancel its load observer
+// until that host operation has returned, including after reader cancellation.
+for (const rejectOperation of [false, true]) {
+  let finishOperation;
+  const operation = new Promise((resolve, reject) => {
+    finishOperation = () => rejectOperation ? reject(new Error("read cancelled")) : resolve();
+  });
+  let cancelled = 0;
+  let api;
+  const loop = {func: null, scheduler: null, pause() { this.scheduler = null; }};
+  const instance = {_krkr2_host_cancel_bookmark_load() { ++cancelled; }};
+  const sandbox = vm.createContext({
+    addToLibrary(value) { api = value; }, MainLoop: loop, Module: instance,
+    setMainLoop(fn) { loop.func = fn; loop.scheduler = () => {}; },
+    handleException(error) { throw error; },
+    wasmTable: {get() { return () => {}; }},
+    WebAssembly: {promising() { return () => Promise.resolve(); }},
+    URLSearchParams, performance: {now: () => 0}, location: {search: ""},
+    requestAnimationFrame() {}, Promise, Map, Number, Object, document: {},
+  });
+  vm.runInContext(source, sandbox);
+  api.emscripten_set_main_loop_arg(1, 0, 0, false);
+  let stopped = false;
+  const stopping = instance.krkr2StopMainLoop(operation).then(() => { stopped = true; });
+  assert.equal(loop.scheduler, null);
+  assert.equal(sandbox.__krkr2MainLoopPromiseState.stopping, true);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(cancelled, 0, "stop must not reenter TJS during an active checkpoint export");
+  assert.equal(stopped, false, "stop must retain the host operation's Wasm stack");
+  finishOperation();
+  await stopping;
+  assert.equal(cancelled, 1, "cancel observer only after the host operation returns");
+}
+console.log("JSPI host checkpoint drain tests passed");

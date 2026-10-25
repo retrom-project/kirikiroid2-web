@@ -25,6 +25,21 @@ EM_JS(int, krkr2_host_main_loop_is_idle, (), {
     return state && !state.pending && !state.stopping ? 1 : 0;
 });
 
+// This is an observation of the game's original save call, not a request to
+// save or load. Host callbacks are synchronous notifications and must not
+// replace an original script result or exception with a JavaScript failure.
+EM_JS(void, krkr2_host_notify_game_save, (int phase, int id, int success), {
+    try {
+        var callback = Module['onGameSave'];
+        if (typeof callback === 'function') {
+            callback(phase === 0 ? {phase: 'begin', id: id}
+                                 : {phase: 'end', id: id, success: success !== 0});
+        }
+    } catch (error) {
+        console.warn('[game-save] Host notification failed', error);
+    }
+});
+
 extern bool TVPStartupSuccess;
 
 namespace {
@@ -101,6 +116,180 @@ using OwnedDispatch = std::unique_ptr<iTJSDispatch2, ReleaseDispatch>;
 iTJSDispatch2 *retainDispatch(iTJSDispatch2 *value) {
     value->AddRef();
     return value;
+}
+
+// Explicit Web GAME_SAVE boundary: ordinary KAG bookmarks can be BMP/PNG/JPEG
+// containers with appended/enclosed script data and custom file names. Observe
+// saveBookMarkToFile itself instead of guessing progress from those names. The
+// original call stays in its existing engine-tick JSPI stack, including cold I/O.
+std::uint32_t game_save_sequence = 0;
+std::size_t game_save_depth = 0;
+bool game_save_flushing = false;
+
+struct GameSaveFlushScope final {
+    GameSaveFlushScope() { game_save_flushing = true; }
+    ~GameSaveFlushScope() { game_save_flushing = false; }
+    GameSaveFlushScope(const GameSaveFlushScope &) = delete;
+    GameSaveFlushScope &operator=(const GameSaveFlushScope &) = delete;
+};
+
+class GameSaveCall final {
+    bool tracked_;
+    bool outermost_;
+    bool completed_ = false;
+    int id_ = 0;
+
+public:
+    explicit GameSaveCall(bool tracked)
+        : tracked_(tracked), outermost_(tracked && game_save_depth++ == 0) {
+        if(outermost_) {
+            // A bounded positive integer is exact in JavaScript. A new id may
+            // only wrap after billions of completed, non-overlapping saves.
+            game_save_sequence = (game_save_sequence % 0x7fffffffU) + 1;
+            id_ = static_cast<int>(game_save_sequence);
+            krkr2_host_notify_game_save(0, id_, 0);
+        }
+    }
+
+    void complete(tjs_error status, const tTJSVariant &result) noexcept {
+        if(!outermost_) return;
+        // Extracted KAG/KAGEX methods return integer true/false. A wrapper that
+        // discards that return is only a non-rejection witness: the Host must
+        // also observe nonempty native file writes within this call's id.
+        const bool success = status == TJS_S_OK &&
+            (result.Type() == tvtVoid ||
+             (result.Type() == tvtInteger && result.operator bool()));
+        completed_ = true;
+        krkr2_host_notify_game_save(1, id_, success ? 1 : 0);
+    }
+
+    ~GameSaveCall() {
+        if(outermost_ && !completed_) krkr2_host_notify_game_save(1, id_, 0);
+        if(tracked_) --game_save_depth;
+    }
+};
+
+class GameSaveObserver final : public tTJSDispatch {
+    tTJSVariant method_;
+    bool active_ = true;
+
+public:
+    explicit GameSaveObserver(const tTJSVariant &method) : method_(method) {}
+
+    void deactivate(bool abandon_receiver = false) {
+        active_ = false;
+        // Only a failed detach during final teardown uses this path. The
+        // runtime is stopped, so cached aliases cannot extend a receiver cycle
+        // after Host ownership is released. In-flight calls own a local copy.
+        if(abandon_receiver)
+            method_ = tTJSVariant(method_.AsObjectNoAddRef(), nullptr);
+    }
+
+    tjs_error IsInstanceOf(tjs_uint32, const tjs_char *, tjs_uint32 *,
+                          const tjs_char *name, iTJSDispatch2 *) override {
+        return ttstr(name) == TJS_W("Function") ? TJS_S_TRUE : TJS_S_FALSE;
+    }
+
+    tjs_error FuncCall(tjs_uint32 flag, const tjs_char *name, tjs_uint32 *hint,
+                      tTJSVariant *result, tjs_int count, tTJSVariant **params,
+                      iTJSDispatch2 *objthis) override {
+        AddRef();
+        OwnedDispatch self(this);
+        // Preserve the complete TJS closure (including an explicit incontextof
+        // receiver), and keep both function and receiver alive across JSPI.
+        const tTJSVariant method(method_);
+        tTJSVariant ignored_result;
+        if(!result) result = &ignored_result;
+        GameSaveCall observed(active_);
+        const auto status = method.AsObjectClosureNoAddRef().FuncCall(
+            flag, name, hint, result, count, params, objthis);
+        observed.complete(status, *result);
+        return status; // The scope pairs a thrown exception with end(false).
+    }
+};
+
+class GameSaveWatch final {
+    OwnedDispatch kag_;
+    tTJSVariant original_;
+    OwnedDispatch observer_;
+    bool detached_ = false;
+
+public:
+    GameSaveWatch(iTJSDispatch2 *kag, const tTJSVariant &method)
+        : kag_(retainDispatch(kag)), original_(method),
+          observer_(new GameSaveObserver(method)) {}
+
+    bool matches(iTJSDispatch2 *kag, const tTJSVariant &method) const {
+        return kag_.get() == kag && method.Type() == tvtObject &&
+               method.AsObjectNoAddRef() == observer_.get();
+    }
+
+    bool install() {
+        const tTJSVariant callback(observer_.get(), nullptr);
+        return kag_->PropSet(TJS_MEMBERENSURE | TJS_IGNOREPROP,
+            TJS_W("saveBookMarkToFile"), nullptr, &callback, kag_.get()) == TJS_S_OK;
+    }
+
+    bool detach() noexcept {
+        if(detached_) return true;
+        try {
+            tTJSVariant current;
+            const auto status = kag_->PropGet(TJS_IGNOREPROP,
+                TJS_W("saveBookMarkToFile"), nullptr, &current, kag_.get());
+            if(status == TJS_E_MEMBERNOTFOUND ||
+               (status == TJS_S_OK && !matches(kag_.get(), current))) {
+                detached_ = true; // Preserve deletion/replacement by the game.
+            } else if(status == TJS_S_OK) {
+                detached_ = kag_->PropSet(TJS_MEMBERENSURE | TJS_IGNOREPROP,
+                    TJS_W("saveBookMarkToFile"), nullptr, &original_, kag_.get()) == TJS_S_OK;
+            }
+            if(detached_) static_cast<GameSaveObserver *>(observer_.get())->deactivate();
+            return detached_;
+        } catch(...) {
+            return false;
+        }
+    }
+
+    ~GameSaveWatch() {
+        if(!detach()) {
+            static_cast<GameSaveObserver *>(observer_.get())->deactivate(true);
+            std::fprintf(stderr, "[game-save] cannot detach native save observer\n");
+        }
+    }
+};
+std::unique_ptr<GameSaveWatch> game_save_watch;
+
+int observeGameSaves() noexcept {
+    // No script FuncCall/getter/setter is evaluated here. Only inspect and
+    // replace an ordinary function member between fully drained engine ticks.
+    if(!TVPStartupSuccess || game_save_depth != 0 || game_save_flushing ||
+       !krkr2_host_main_loop_is_idle()) return 0;
+    try {
+        ScriptDispatch script;
+        tTJSVariant kag_value, method;
+        iTJSDispatch2 *kag = nullptr;
+        if(script.value && script.value->PropGet(TJS_IGNOREPROP,
+            TJS_W("kag"), nullptr, &kag_value, script.value) == TJS_S_OK &&
+           kag_value.Type() == tvtObject) kag = kag_value.AsObjectNoAddRef();
+        if(kag) {
+            const auto status = kag->PropGet(TJS_IGNOREPROP,
+                TJS_W("saveBookMarkToFile"), nullptr, &method, kag);
+            if(status != TJS_S_OK && status != TJS_E_MEMBERNOTFOUND)
+                return kMethodUnavailable;
+        }
+        if(game_save_watch && game_save_watch->matches(kag, method)) return 1;
+        if(game_save_watch && !game_save_watch->detach()) return kMethodUnavailable;
+        game_save_watch.reset();
+        if(!kag || method.Type() != tvtObject || !method.AsObjectNoAddRef() ||
+           method.AsObjectNoAddRef()->IsInstanceOf(0, nullptr, nullptr,
+               TJS_W("Function"), method.AsObjectNoAddRef()) != TJS_S_TRUE) return 0;
+        auto watch = std::make_unique<GameSaveWatch>(kag, method);
+        if(!watch->install()) return kMethodUnavailable;
+        game_save_watch = std::move(watch);
+        return 1;
+    } catch(...) {
+        return kScriptException;
+    }
 }
 
 // Some KAG overrides discard loadBookMarkFromFile's return value. Observe a
@@ -615,6 +804,49 @@ int scheduleKagLoad(tjs_int32 slot) noexcept {
 }
 } // namespace
 
+// 0: startup/tick/method not ready; 1: observing the current KAG save method;
+// -3: member read/write/detach failed; -5: TJS lookup/installation exception.
+extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_observe_game_saves() {
+    return observeGameSaves();
+}
+
+// Explicit Web GAME_SAVE export boundary. A native save menu can update its
+// bookkeeping after saveBookMarkToFile has already persisted the slot/index.
+// Flush the game's registered system-data callback between drained ticks. This
+// creates no bookmark and supplies no progress witness. The JSPI export retains
+// these closures if the native callback reads a cold resource while flushing.
+// 0: no callback; 1: flushed; negative: failed (never silently export old data).
+extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_flush_game_saves() {
+    if(!TVPStartupSuccess || game_save_depth != 0 || game_save_flushing ||
+       !krkr2_host_main_loop_is_idle()) return kBookmarkRejected;
+    try {
+        const GameSaveFlushScope flushing;
+        ScriptDispatch script;
+        if(!script.value) return kScriptUnavailable;
+        tTJSVariant kag_value, method, result;
+        if(script.value->PropGet(TJS_IGNOREPROP, TJS_W("kag"), nullptr,
+                                 &kag_value, script.value) != TJS_S_OK ||
+           kag_value.Type() != tvtObject || !kag_value.AsObjectNoAddRef())
+            return kKagUnavailable;
+        auto *kag = kag_value.AsObjectNoAddRef();
+        const auto status = kag->PropGet(TJS_IGNOREPROP,
+            TJS_W("saveSystemVariables"), nullptr, &method, kag);
+        if(status == TJS_E_MEMBERNOTFOUND) return 0;
+        if(status != TJS_S_OK || method.Type() != tvtObject ||
+           !method.AsObjectNoAddRef() ||
+           method.AsObjectNoAddRef()->IsInstanceOf(0, nullptr, nullptr,
+               TJS_W("Function"), method.AsObjectNoAddRef()) != TJS_S_TRUE)
+            return kMethodUnavailable;
+        if(method.AsObjectClosureNoAddRef().FuncCall(0, nullptr, nullptr,
+            &result, 0, nullptr, kag) != TJS_S_OK) return kMethodUnavailable;
+        return result.Type() == tvtVoid ||
+            (result.Type() == tvtInteger && result.operator bool())
+            ? 1 : kBookmarkRejected;
+    } catch(...) {
+        return kScriptException;
+    }
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_load_bookmark_is_ready() {
     // Startup success is set only after startup.tjs / Initialize.tjs returns.
     // Loader availability is meaningful only between complete engine ticks.
@@ -672,4 +904,5 @@ extern "C" EMSCRIPTEN_KEEPALIVE void krkr2_host_cancel_bookmark_load() {
     if(load_state.load() == kLoadPending) load_state.store(kBookmarkRejected);
     bootstrap_load.reset();
     pending_load.reset();
+    game_save_watch.reset();
 }
