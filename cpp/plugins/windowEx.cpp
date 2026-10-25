@@ -22,6 +22,7 @@ typedef unsigned long ULONG_PTR;
 #include "WindowImpl.h"
 #ifdef __EMSCRIPTEN__
 #include "WebDisplayMonitors.h"
+#include "WebWindowPlacement.h"
 #endif
 
 #define NCB_MODULE_NAME TJS_W("windowEx.dll")
@@ -360,6 +361,53 @@ struct WindowEx {
         return (HWND)(tjs_int64)(val);
     }
 
+#ifdef __EMSCRIPTEN__
+    static bool webGeometry(iTJSDispatch2 *obj, WindowExWeb::Rect &current,
+                            WindowExWeb::Rect &work) {
+        if(!obj) return false;
+        ncbPropAccessor properties(obj);
+        current = {properties.getIntValue(TJS_W("left")),
+                   properties.getIntValue(TJS_W("top")),
+                   properties.getIntValue(TJS_W("width")),
+                   properties.getIntValue(TJS_W("height"))};
+        tjs_int width, height;
+        if(current.width <= 0 || current.height <= 0 ||
+           !TVPGetScreenSize(0, width, height) || width <= 0 || height <= 0)
+            return false;
+        work = {0, 0, width, height};
+        return true;
+    }
+
+    static tjs_error webMaximize(iTJSDispatch2 *obj, bool maximized) {
+        auto *instance = GetInstance(obj);
+        if(!instance) return TJS_E_ACCESSDENYED;
+        WindowExWeb::Rect current, work;
+        if(!webGeometry(obj, current, work)) return TJS_E_FAIL;
+        const auto previous = instance->webPlacement;
+        const auto target = instance->webPlacement.setMaximized(maximized, current, work);
+        if(target == current) return TJS_S_OK;
+        tTJSVariant width(target.width), height(target.height);
+        tTJSVariant *parameters[] = {&width, &height};
+        tjs_error status;
+        try {
+            status = obj->FuncCall(0, TJS_W("setSize"), nullptr, nullptr,
+                                   2, parameters, obj);
+        } catch(...) {
+            instance->webPlacement = previous;
+            throw;
+        }
+        if(TJS_FAILED(status)) {
+            instance->webPlacement = previous;
+            return status;
+        }
+        // The Web SetSize path updates the draw area without posting this
+        // event; publish it only after geometry and placement agree.
+        static ttstr eventname(TJS_W("onResize"));
+        TVPPostEvent(obj, obj, eventname, 0, TVP_EPT_IMMEDIATE, 0, nullptr);
+        return TJS_S_OK;
+    }
+#endif
+
     //--------------------------------------------------------------
     // クラス追加メソッド(RawCallback形式)
 
@@ -371,12 +419,20 @@ struct WindowEx {
 
     static tjs_error maximize(tTJSVariant *r, tjs_int n, tTJSVariant **p,
                               iTJSDispatch2 *obj) {
+#ifdef __EMSCRIPTEN__
+        return webMaximize(obj, true);
+#else
         return TJS_S_OK;
+#endif
     }
 
     static tjs_error showRestore(tTJSVariant *r, tjs_int n, tTJSVariant **p,
                                  iTJSDispatch2 *obj) {
+#ifdef __EMSCRIPTEN__
+        return webMaximize(obj, false);
+#else
         return TJS_S_OK;
+#endif
     }
 
     static tjs_error focusMenuByKey(tTJSVariant *r, tjs_int n, tTJSVariant **p,
@@ -437,8 +493,25 @@ struct WindowEx {
     // getNormalRect
     static tjs_error getNormalRect(tTJSVariant *r, tjs_int n, tTJSVariant **p,
                                    iTJSDispatch2 *obj) {
+#ifdef __EMSCRIPTEN__
+        auto *instance = GetInstance(obj);
+        WindowExWeb::Rect current, work;
+        if(!instance || !webGeometry(obj, current, work)) return TJS_E_FAIL;
+        instance->webPlacement.isMaximized(current, work);
+        const auto rect = instance->webPlacement.normalRect(current);
+        if(r) {
+            ncbDictionaryAccessor result;
+            if(!result.IsValid() || !result.SetValue(TJS_W("x"), rect.x) ||
+               !result.SetValue(TJS_W("y"), rect.y) ||
+               !result.SetValue(TJS_W("w"), rect.width) ||
+               !result.SetValue(TJS_W("h"), rect.height)) return TJS_E_FAIL;
+            r->SetObject(result.GetDispatch(), result.GetDispatch());
+        }
+        return TJS_S_OK;
+#else
         getWindowRect(r, n, p, obj);
         return TJS_S_OK;
+#endif
     }
 
     // property maximized box
@@ -464,7 +537,16 @@ struct WindowEx {
     }
 
     // property maximized
-    static bool isMaximized(iTJSDispatch2 *obj) { return true; }
+    static bool isMaximized(iTJSDispatch2 *obj) {
+#ifdef __EMSCRIPTEN__
+        auto *instance = GetInstance(obj);
+        WindowExWeb::Rect current, work;
+        return instance && webGeometry(obj, current, work) &&
+            instance->webPlacement.isMaximized(current, work);
+#else
+        return true;
+#endif
+    }
 
     static tjs_error getMaximized(tTJSVariant *r, tjs_int n, tTJSVariant **p,
                                   iTJSDispatch2 *obj) {
@@ -475,7 +557,12 @@ struct WindowEx {
 
     static tjs_error setMaximized(tTJSVariant *r, tjs_int n, tTJSVariant **p,
                                   iTJSDispatch2 *obj) {
+#ifdef __EMSCRIPTEN__
+        if(n < 1) return TJS_E_BADPARAMCOUNT;
+        return webMaximize(obj, !!p[0]->AsInteger());
+#else
         return TJS_S_OK;
+#endif
     }
 
     // property minimized
@@ -882,6 +969,9 @@ protected:
     }
 
 private:
+#ifdef __EMSCRIPTEN__
+    WindowExWeb::Placement webPlacement;
+#endif
     iTJSDispatch2 *self, *menuex;
     iTJSDispatch2 *sysMenuModified,
         *sysMenuModMap; //< システムメニュー改変用
@@ -962,6 +1052,10 @@ NCB_ATTACH_CLASS_WITH_HOOK(WindowEx, Window) {
 
     RawCallback(TJS_W("minimize"), &Class::minimize, 0);
     RawCallback(TJS_W("maximize"), &Class::maximize, 0);
+#ifdef __EMSCRIPTEN__
+    RawCallback(TJS_W("maximized"), &Class::getMaximized,
+                &Class::setMaximized, 0);
+#endif
     // RawCallback(TJS_W("maximizeBox"), &Class::getMaximizeBox,
     // &Class::setMaximizeBox, 0); RawCallback(TJS_W("minimizeBox"),
     // &Class::getMinimizeBox,      &Class::setMinimizeBox, 0);
