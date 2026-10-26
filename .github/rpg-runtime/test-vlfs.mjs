@@ -12,7 +12,7 @@ sandbox.setTimeout=(callback,ms,...args)=>setTimeout(callback,ms>=15000?0:ms,...
 vm.createContext(sandbox); vm.runInContext(source,sandbox);
 const vlfs=sandbox.window.VLFS; await vlfs.init();
 assert.equal(vlfs.contentAbi,'content-io-v1');
-assert.equal(vlfs.contractSha256,'9601f63ba9d1bad095b42b32a3d6167166535be246a87f0efac7c5b125ed27bf');
+assert.equal(vlfs.contractSha256,'e1f59c8e5e6c1175444a09c0e8c8c4095a3be6d6c3d836a1c594e4f67f026e21');
 assert.equal(vlfs.registerRemote,undefined); assert.equal(vlfs.registerZipRemote,undefined);
 assert.doesNotMatch(source,/\bfetch\s*\(|XMLHttpRequest|FULL_DOWNLOAD_FALLBACK/);
 let closed=false,warm=false,reads=0,pending;
