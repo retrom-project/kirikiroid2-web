@@ -72,15 +72,21 @@ extern bool __real__emscripten_yield(double);
 extern int krkr2_futex_may_suspend(void);
 extern void krkr2_futex_yield(void);
 
-static _Thread_local unsigned futex_depth;
-static _Thread_local volatile void *futex_address;
-static void *_Atomic suspended_futex;
-static _Atomic bool suspended_woken;
+// Aligned futex addresses cannot equal this notification marker. Publishing
+// the wake in the same CAS that claims the address leaves no second write
+// that could arrive after the browser has resumed or started another wait.
+#define FUTEX_WOKEN ((uintptr_t)1)
+static _Atomic uintptr_t suspended_futex;
 
-struct futex_scope { unsigned depth; volatile void *address; };
+struct futex_scope {
+    struct futex_scope *previous;
+    volatile void *address;
+    bool woken;
+};
+static _Thread_local struct futex_scope *current_futex;
+
 static void leave_futex_scope(struct futex_scope *scope) {
-    futex_depth = scope->depth;
-    futex_address = scope->address;
+    current_futex = scope->previous;
 }
 
 int __wrap_emscripten_futex_wait(volatile void *address, uint32_t value,
@@ -89,13 +95,12 @@ int __wrap_emscripten_futex_wait(volatile void *address, uint32_t value,
         return __real_emscripten_futex_wait(address, value, timeout);
     }
     struct futex_scope scope __attribute__((cleanup(leave_futex_scope))) = {
-        futex_depth, futex_address
+        current_futex, address, false
     };
-    ++futex_depth;
-    futex_address = address;
+    current_futex = &scope;
     int result = __real_emscripten_futex_wait(address, value, timeout);
     // Only this wait's own yield reports a recorded wake as an interruption.
-    if (result == -EINTR && atomic_exchange(&suspended_woken, false)) {
+    if (result == -EINTR && scope.woken) {
         return 0;
     }
     return result;
@@ -105,13 +110,12 @@ int __wrap_emscripten_futex_wake(volatile void *address, int count) {
     if (!address || (((intptr_t)address) & 3) != 0 || count <= 0) {
         return __real_emscripten_futex_wake(address, count);
     }
-    void *expected = (void *)address;
-    if (!atomic_compare_exchange_strong(&suspended_futex, &expected, NULL)) {
+    uintptr_t expected = (uintptr_t)address;
+    if (!atomic_compare_exchange_strong(&suspended_futex, &expected, FUTEX_WOKEN)) {
         return __real_emscripten_futex_wake(address, count);
     }
     // Same accounting as the SDK's main-thread wake: INT_MAX wakes everyone
     // and reports only worker waiters.
-    atomic_store(&suspended_woken, true);
     if (count == INT_MAX) {
         return __real_emscripten_futex_wake(address, count);
     }
@@ -119,18 +123,19 @@ int __wrap_emscripten_futex_wake(volatile void *address, int count) {
 }
 
 bool __wrap__emscripten_yield(double now) {
-    if (futex_depth && emscripten_is_main_browser_thread() &&
+    if (current_futex && emscripten_is_main_browser_thread() &&
         krkr2_futex_may_suspend()) {
-        atomic_store(&suspended_woken, false);
-        atomic_store(&suspended_futex, (void *)futex_address);
+        struct futex_scope *scope = current_futex;
+        atomic_store(&suspended_futex, (uintptr_t)scope->address);
         krkr2_futex_yield();
-        void *expected = (void *)futex_address;
-        atomic_compare_exchange_strong(&suspended_futex, &expected, NULL);
+        scope->woken = atomic_exchange(&suspended_futex, 0) == FUTEX_WOKEN;
+        // Save this wait's notification before the SDK processes queued calls:
+        // acquiring the proxy queue mutex can recursively enter another wait.
         // The timestamp supplied before suspension is stale. Zero asks the
         // SDK timer implementation to obtain the current time if needed.
         bool timer_fired = __real__emscripten_yield(0);
         // A recorded wake leaves the SDK loop through its interruption exit.
-        return timer_fired || atomic_load(&suspended_woken);
+        return timer_fired || scope->woken;
     }
     return __real__emscripten_yield(now);
 }

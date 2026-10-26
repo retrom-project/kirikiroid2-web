@@ -68,9 +68,12 @@ JSPI 没有“当前调用栈是否可挂起”的查询接口。适配因此在
 SDK 在 yield 期间撤销 wake 地址，原本只覆盖处理代理队列的短暂窗口；让出事件
 循环后窗口变成一整轮浏览器任务，不改变原子值的 `emscripten_futex_wake` 会因此
 丢失。桥同时包装 `emscripten_futex_wake`：挂起期间登记主线程正在等待的地址，
-唤醒方用 CAS 认领后按 SDK 的主线程计数规则（`INT_MAX` 不计入）返回，并继续
-唤醒 worker 等待者；恢复后经 SDK 已有的 yield 中断出口离开循环，等待包装再把
-这次中断转换为普通唤醒结果 0。嵌套的普通同步等待仍沿用 SDK 撤销标记的行为。
+唤醒方用一次 CAS 将对齐地址替换为通知标记，同时完成认领和结果发布，避免
+主线程恢复后漏掉尚未写入的通知。它按 SDK 的主线程计数规则（`INT_MAX` 不计入）
+返回，并继续唤醒 worker 等待者。主线程恢复后以原子交换取回通知，在进入 SDK
+代理队列处理前保存到当前等待的栈帧，避免队列 mutex 的嵌套等待覆盖外层结果。
+随后经 SDK 已有的 yield 中断出口离开循环，等待包装再把这次中断转换为普通
+唤醒结果 0。嵌套的普通同步等待仍沿用 SDK 撤销标记的行为。
 
 后台 pthread 的函数表返回值保持 SDK 原值。`invokeEntryPoint` 会自行把这个
 原生 Wasm 函数交给 `WebAssembly.promising`，不能在其外添加普通 JS 包装。
@@ -110,7 +113,13 @@ cmake --build out/web/debug
 
 ```sh
 node tests/web/pthread_jspi.test.mjs
+python3 .github/rpg-runtime/test-pthread-futex.py
 ```
+
+原生 C 回归直接包含实际桥代码，控制唤醒认领后的 worker 抢占和 SDK yield 内的
+递归等待；旧实现的两个用例均会出现 wake 返回 1、wait 仍超时。SDK stub 只用于
+确定复现这两个状态交错，不能替代下面的真实 JSPI 浏览器测试。两组测试均已纳入
+`check-source.sh`。
 
 真实浏览器专项测试（已 source emsdk，必须将 `.c` 按 C 编译）：
 
@@ -170,5 +179,9 @@ python3 coi-server.py out 18080 18443
   入口在挂起 main 期间的短超时 futex、32 个并存线程、64 次复用、128 次显式
   `pthread_exit`、冷子线程创建、失败回滚和恢复。
 - 入口权限、原始函数表身份、同步返回值和异常、主循环排空的 Node 测试通过。
-- 本轮私有游戏产品复验另保存在相应 PFB 的 evidence 中；专项 smoke 本身
-  不代表完整游戏产品验收。
+- 后续审查补充了唤醒 CAS 后 worker 被抢占、代理队列递归等待两个确定性回归：
+  原实现均返回超时，合并原子通知状态并按等待栈帧保存结果后均通过。完整
+  `check-source.sh`、核心候选构建和候选完整性校验通过。
+- 补充修复后的冷启动、预热 2 个 Worker、ASan 三组真实浏览器 smoke 均通过，
+  结果和截图保存在同一 PFB 的 Retrom `.pfb/evidence/smoke-suite-result.json`
+  与 `smoke-{cold,warm,asan}.png`。专项 smoke 本身不代表完整游戏产品验收。
