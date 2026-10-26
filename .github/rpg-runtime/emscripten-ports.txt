@@ -1,0 +1,5 @@
+libpng libpng-mt libpng-legacysjlj libpng-mt-legacysjlj
+freetype freetype-legacysjlj
+harfbuzz harfbuzz-mt
+sdl2 sdl2-mt
+sdl2_ttf sdl2_ttf-mt
