@@ -11889,8 +11889,21 @@ tjs_int tTJSNI_Font::GetTextWidth(const ttstr &text) {
 tjs_int tTJSNI_Font::GetTextHeight(const ttstr &text) {
     if(Layer)
         return Layer->GetTextHeight(text);
-    else
+    else {
+#ifdef __EMSCRIPTEN__
+        GetCurrentRasterizer()->ApplyFont(Font);
+        tjs_int height = std::abs(Font.Height);
+        const tjs_char *buf = text.c_str();
+        while(*buf) {
+            tjs_int w, h;
+            GetCurrentRasterizer()->GetTextExtent(*buf++, w, h);
+            height = std::max(height, h);
+        }
+        return height;
+#else
         return std::abs(Font.Height);
+#endif
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -11915,7 +11928,11 @@ double tTJSNI_Font::GetEscHeightX(const ttstr &text) {
     if(Layer)
         return Layer->GetEscHeightX(text);
     else
+#ifdef __EMSCRIPTEN__
+        return std::sin(Font.Angle * (M_PI / 1800)) * GetTextHeight(text);
+#else
         return std::sin(Font.Angle * (M_PI / 1800)) * std::abs(Font.Height);
+#endif
 }
 
 //---------------------------------------------------------------------------
@@ -11923,7 +11940,11 @@ double tTJSNI_Font::GetEscHeightY(const ttstr &text) {
     if(Layer)
         return Layer->GetEscHeightY(text);
     else
+#ifdef __EMSCRIPTEN__
+        return std::cos(Font.Angle * (M_PI / 1800)) * GetTextHeight(text);
+#else
         return std::cos(Font.Angle * (M_PI / 1800)) * std::abs(Font.Height);
+#endif
 }
 
 //---------------------------------------------------------------------------

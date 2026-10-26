@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,11 +27,13 @@ class ReleaseAssetsTest(unittest.TestCase):
             "index.js": MARKERS.encode().ljust(200_000, b" "),
             "index.wasm": b"\0asm\1\0\0\0".ljust(10_000_000, b"\0"),
             "vlfs.js": b"content-io-v1 registerContent(path, handle, reader)".ljust(10_000, b" "),
-            "assets.zip": b"PK\3\4".ljust(1_000_000, b"\0"),
             "LICENSE": b"test license".ljust(20_000, b" "),
         }
         for name, payload in assets.items():
             (self.output / name).write_bytes(payload)
+        with zipfile.ZipFile(self.output / "assets.zip", "w") as archive:
+            for name in ("NotoSansSC-Regular.otf", "NotoSansSC-Regular.LICENSE.txt"):
+                archive.write(ROOT / "ui/cocos-studio" / name, name)
         self.command = [
             sys.executable, str(ROOT / ".github/rpg-runtime/verify-release.py"),
             "--output", str(self.output), "--repository", "https://github.com/retrom-project/kirikiroid2-web",
@@ -53,7 +56,11 @@ class ReleaseAssetsTest(unittest.TestCase):
             with self.subTest(asset=asset["filename"]):
                 path = self.output / asset["filename"]
                 original = path.read_bytes()
-                path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+                if path.name == "assets.zip":
+                    with zipfile.ZipFile(path, "a") as archive:
+                        archive.writestr("handoff-regression.txt", "changed")
+                else:
+                    path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
                 self.assertNotEqual(self.check_bundle(), 0)
                 path.write_bytes(original)
 

@@ -7,11 +7,16 @@ import argparse
 import hashlib
 import json
 import re
+import zipfile
 from pathlib import Path
 
 
 TAG = re.compile(r"^retrom-core-g13dda190f837-r[1-9][0-9]*(-rc\.[1-9][0-9]*)?$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+BUNDLED_CJK = {
+    "NotoSansSC-Regular.otf": (8_331_336, "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9"),
+    "NotoSansSC-Regular.LICENSE.txt": (4_301, "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"),
+}
 
 
 def digest(path: Path) -> str:
@@ -53,6 +58,15 @@ def main() -> int:
         raise SystemExit("RPG_RUNTIME_RELEASE_WASM_INVALID")
     if paths["assets.zip"].read_bytes()[:4] != b"PK\x03\x04":
         raise SystemExit("RPG_RUNTIME_RELEASE_ASSETS_ZIP_INVALID")
+    try:
+        with zipfile.ZipFile(paths["assets.zip"]) as archive:
+            for name, (size, sha256) in BUNDLED_CJK.items():
+                if (archive.namelist().count(name) != 1
+                        or archive.getinfo(name).file_size != size
+                        or hashlib.sha256(archive.read(name)).hexdigest() != sha256):
+                    raise SystemExit(f"RPG_RUNTIME_RELEASE_CJK_ASSET_INVALID:{name}")
+    except (zipfile.BadZipFile, KeyError) as error:
+        raise SystemExit("RPG_RUNTIME_RELEASE_CJK_ASSET_INVALID") from error
     javascript = paths["index.js"].read_text(encoding="utf-8")
     if any(marker not in javascript for marker in (
         "krkr2_host_load_bookmark_is_ready",

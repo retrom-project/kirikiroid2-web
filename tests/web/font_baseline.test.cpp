@@ -108,11 +108,34 @@ static void checkBodyLine(FT_Library library, const char *path) {
     FT_Done_Face(face);
 }
 
+static void checkHintedIdeographTop(FT_Library library, const char *path) {
+    FT_Face face = open(library, path, 44);
+    ProductionFace driver(face);
+    for(unsigned ch : {0x5168u, 0x5b66u, 0x6d3eu, 0x5bf9u, 0x662fu}) {
+        render(face, ch);
+        const auto original = bitmap(face);
+        unsigned outsideInk = 0;
+        for(unsigned y = 0; y < face->glyph->bitmap.rows; ++y)
+            if(driver.bitmapBaseline() - face->glyph->bitmap_top + int(y) < 0)
+                for(unsigned x = 0; x < face->glyph->bitmap.width; ++x)
+                    outsideInk += face->glyph->bitmap.buffer[y * face->glyph->bitmap.pitch + x] != 0;
+        std::cout << "hinted ideograph char=" << std::hex << ch << std::dec
+                  << " baseline=" << driver.GetAscent() << " top=" << face->glyph->bitmap_top
+                  << " excludedTopInk=" << outsideInk << std::endl;
+        require(!outsideInk, "fractional font ascent truncation clips hinted ideograph ink at y0");
+        require(driver.GetAscent() == driver.bitmapBaseline() && driver.GetAscent() == driver.rectBaseline(),
+                "hinted ideograph baselines disagree");
+        require(original == bitmap(face), "rounding changed glyph pixels or advance");
+    }
+    FT_Done_Face(face);
+}
+
 int main(int argc, char **argv) {
     try {
-        require(argc == 6, "fixture font arguments missing");
+        require(argc == 7, "fixture font arguments missing");
         FT_Library library = nullptr;
         require(!FT_Init_FreeType(&library), "FreeType unavailable");
+        checkHintedIdeographTop(library, argv[6]);
         checkBodyLine(library, argv[2]);
         if(*argv[4]) checkNameField(library, argv[4], "actual Heavy");
         // Real bundled glyph data plus explicit, valid font-declared EM metrics.
@@ -121,8 +144,8 @@ int main(int argc, char **argv) {
         {
             FT_Face face = open(library, argv[2], 120);
             ProductionFace driver(face);
-            require(driver.GetAscent() == 91 && driver.bitmapBaseline() == 91 &&
-                        driver.rectBaseline() == 91,
+            require(driver.GetAscent() == 92 && driver.bitmapBaseline() == 92 &&
+                        driver.rectBaseline() == 92,
                     "CJK font without BASE did not use its declared OS/2 EM-box");
             FT_Done_Face(face);
         }
@@ -131,8 +154,8 @@ int main(int argc, char **argv) {
                  fixtureDirectory / "oversized-base.ttf"}) {
             FT_Face face = open(library, path.c_str(), 120);
             ProductionFace driver(face);
-            require(driver.GetAscent() == 125 && driver.bitmapBaseline() == 125 &&
-                        driver.rectBaseline() == 125,
+            require(driver.GetAscent() == 126 && driver.bitmapBaseline() == 126 &&
+                        driver.rectBaseline() == 126,
                     "malformed or unsupported explicit BASE was treated as absence");
             FT_Done_Face(face);
         }
@@ -143,29 +166,29 @@ int main(int argc, char **argv) {
             const TT_OS2 original = *metrics;
             metrics->ulUnicodeRange1 = metrics->ulUnicodeRange2 = 0;
             metrics->ulCodePageRange1 = 0;
-            require(ProductionFace(face).GetAscent() == 125,
+            require(ProductionFace(face).GetAscent() == 126,
                     "non-CJK font incorrectly acquired ideographic metrics");
             metrics->ulUnicodeRange2 = 1u << 16; // CJK punctuation alone
-            require(ProductionFace(face).GetAscent() == 125,
+            require(ProductionFace(face).GetAscent() == 126,
                     "punctuation-only font incorrectly classified as CJK");
             metrics->ulUnicodeRange2 = 0;
             metrics->ulCodePageRange1 = 1u << 17; // JIS, no Unicode range declaration
-            require(ProductionFace(face).GetAscent() == 91,
+            require(ProductionFace(face).GetAscent() == 92,
                     "CJK code-page declaration was ignored");
             metrics->version = 0; // code-page fields were introduced in version 1
-            require(ProductionFace(face).GetAscent() == 125,
+            require(ProductionFace(face).GetAscent() == 126,
                     "OS/2 version 0 used unavailable code-page fields");
             *metrics = original;
             metrics->sTypoAscender = 0;
-            require(ProductionFace(face).GetAscent() == 125,
+            require(ProductionFace(face).GetAscent() == 126,
                     "invalid typographic ascent changed the baseline");
             *metrics = original;
             metrics->sTypoDescender = 1;
-            require(ProductionFace(face).GetAscent() == 125,
+            require(ProductionFace(face).GetAscent() == 126,
                     "invalid typographic descent changed the baseline");
             *metrics = original;
             metrics->version = 0xffff;
-            require(ProductionFace(face).GetAscent() == 125,
+            require(ProductionFace(face).GetAscent() == 126,
                     "unavailable OS/2 metrics changed the baseline");
             *metrics = original;
             FT_Done_Face(face);
@@ -173,9 +196,9 @@ int main(int argc, char **argv) {
         if(*argv[5]) {
             FT_Face face = open(library, argv[5], 30);
             ProductionFace driver(face);
-            require(driver.GetAscent() == 26 && driver.bitmapBaseline() == 26 &&
-                        driver.rectBaseline() == 26,
-                    "actual body font without BASE changed its existing baseline");
+            require(driver.GetAscent() == 27 && driver.bitmapBaseline() == 27 &&
+                        driver.rectBaseline() == 27,
+                    "actual body font rounded baseline disagrees with declared metrics");
             for(unsigned ch : {0x67d0u, 0x3001u, 0x9c81u}) {
                 render(face, ch);
                 const int top = 24 + driver.bitmapBaseline() - face->glyph->bitmap_top;
