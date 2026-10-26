@@ -64,7 +64,7 @@
     }
 
     var CONTENT_ABI = 'content-io-v1';
-    var CONTRACT_SHA256 = '9601f63ba9d1bad095b42b32a3d6167166535be246a87f0efac7c5b125ed27bf';
+    var CONTRACT_SHA256 = 'e1f59c8e5e6c1175444a09c0e8c8c4095a3be6d6c3d836a1c594e4f67f026e21';
     function contentEntry(handle, reader) {
         if (!handle || !reader || reader.abi !== CONTENT_ABI ||
             typeof handle.fileId !== 'string' || !handle.fileId ||
