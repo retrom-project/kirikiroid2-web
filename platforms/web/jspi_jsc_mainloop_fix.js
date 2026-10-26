@@ -11,14 +11,14 @@
 // 本项目 emscripten_set_main_loop_arg 的唯一注册者是 krkr2_main_loop_tick
 //（JSPI_EXPORTS 中的主循环入口；元数据刷新直接通过导出调用，SDK 另行包装 main 与 pthread 入口，
 // 见 CMakeLists.txt 与 vcpkg cocos2dx patch
-// CCApplication-emscripten.cpp），故此处无条件包 promising——与 Chrome 下
-// getWasmTableEntry 命中身份比较后的行为完全一致，对 V8 无行为变化。
+// CCApplication-emscripten.cpp），故此处仍显式包 promising。与 SDK 的异步
+// 导出一样登记入口，以便 Web futex 仅在合法挂起的调用链中让出事件循环。
 addToLibrary({
   emscripten_set_main_loop_arg__deps: [
-    '$setMainLoop', '$MainLoop', '$handleException'
+    '$setMainLoop', '$MainLoop', '$handleException', '$krkr2JspiContext'
   ],
   emscripten_set_main_loop_arg: (func, arg, fps, simulateInfiniteLoop) => {
-    var wrappedTick = WebAssembly.promising(wasmTable.get(func));
+    var wrappedTick = krkr2JspiContext.promising(wasmTable.get(func));
     // Emscripten's stock MainLoop.runIter intentionally discards the callback
     // return value and schedules the next RAF immediately. A JSPI export,
     // however, returns a Promise whenever its Wasm stack can suspend. Keep the

@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cerrno>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <malloc.h>
 #include <mutex>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include <emscripten.h>
+#include <emscripten/proxying.h>
 #include <emscripten/threading.h>
 
 EM_JS(int, worker_count, (), {
@@ -39,11 +41,123 @@ EM_JS(void, fail_next_worker, (int kind), {
 static void *nothing(void *) { return nullptr; }
 static void *exit_explicitly(void *) { pthread_exit(nullptr); }
 
+extern "C" EMSCRIPTEN_KEEPALIVE int pthread_smoke_sync_wait() {
+    int value = 0;
+    assert(emscripten_futex_wait(&value, 0, 2) == -ETIMEDOUT);
+    return 42;
+}
+
+static int sync_wait_callback() { return pthread_smoke_sync_wait(); }
+
+EM_JS(void, start_sync_callback_checks, (int callback), {
+    Module.syncWaitChecks = { done: 0, passed: 0, errors: [] };
+    const check = (fn) => {
+        try {
+            const result = fn();
+            if (result === 42) ++Module.syncWaitChecks.passed;
+            else Module.syncWaitChecks.errors.push('synchronous integer required');
+        } catch (error) {
+            Module.syncWaitChecks.errors.push(String(error));
+        } finally {
+            ++Module.syncWaitChecks.done;
+        }
+    };
+    setTimeout(() => check(() => _pthread_smoke_sync_wait()), 0);
+    const tableCallback = getWasmTableEntry(callback);
+    setTimeout(() => check(tableCallback), 0);
+});
+
+EM_JS(int, sync_callback_status, (), {
+    const state = Module.syncWaitChecks;
+    if (state.done !== 2) return 0;
+    if (state.passed === 2) return 1;
+    console.error(state.errors.join('; '));
+    return -1;
+});
+
+static void check_sync_callbacks() {
+    start_sync_callback_checks(
+        static_cast<int>(reinterpret_cast<std::uintptr_t>(sync_wait_callback)));
+    // The main export remains suspended while these ordinary, non-promising
+    // JS -> Wasm entry points perform their bounded synchronous waits.
+    while (!sync_callback_status()) emscripten_sleep(1);
+    assert(sync_callback_status() == 1);
+    puts("PASS synchronous export and table callback stay synchronous");
+}
+
+static void check_futex_notification() {
+    int value = 0;
+    std::atomic<bool> waiting{false};
+    std::atomic<int> awakened{0};
+    std::thread worker([&] {
+        while (!waiting) std::this_thread::yield();
+        // Wake alone is meaningful: a raw futex notification need not change
+        // the compared value. Retry the SDK's existing unmarked yield window.
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            awakened = emscripten_futex_wake(&value, 1);
+            if (awakened) return;
+            emscripten_thread_sleep(1);
+        }
+    });
+    waiting = true;
+    int result = emscripten_futex_wait(&value, 0, 250);
+    worker.join();
+    assert(result == 0 && awakened == 1 && value == 0);
+    puts("PASS futex notification without a value change");
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void
+pthread_smoke_proxy_finish(em_proxying_ctx *context) {
+    emscripten_proxy_finish(context);
+}
+
+EM_JS(void, finish_proxy_later, (em_proxying_ctx *context), {
+    // A cold VLFS read also returns from the synchronous system-queue task
+    // before its Promise completion can release the worker's native lock.
+    Promise.resolve().then(() => _pthread_smoke_proxy_finish(context));
+});
+
+static void check_async_proxy_mutex() {
+    std::mutex mutex;
+    std::atomic<bool> locked{false}, contend{false}, completed{false};
+    std::thread worker([&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        locked = true;
+        while (!contend) std::this_thread::yield();
+        assert(emscripten_proxy_sync_with_ctx(
+            emscripten_proxy_get_system_queue(),
+            emscripten_main_runtime_thread_id(),
+            [](em_proxying_ctx *context, void *) { finish_proxy_later(context); },
+            nullptr));
+        completed = true;
+    });
+    while (!locked) emscripten_sleep(1);
+    puts("BEGIN browser mutex waits for asynchronous proxied completion");
+    contend = true;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        assert(completed);
+    }
+    worker.join();
+    puts("PASS browser mutex waits for asynchronous proxied completion");
+}
+
 int main() {
     assert(emscripten_is_main_browser_thread());
     assert(emscripten_is_main_runtime_thread());
 #ifndef WARM_POOL
     assert(worker_count() == 0);
+#endif
+    check_sync_callbacks();
+    check_futex_notification();
+#ifdef FUTEX_NOTIFICATION_ONLY
+    EM_ASM({ document.title = 'pthread JSPI PASS'; });
+    return 0;
+#endif
+    check_async_proxy_mutex();
+#ifdef ASYNC_PROXY_CONTENTION_ONLY
+    EM_ASM({ document.title = 'pthread JSPI PASS'; });
+    return 0;
 #endif
     // Real std::thread constructors must suspend inside libc/libc++, while
     // all 32 children remain live. No Worker may be reused prematurely.
