@@ -15,9 +15,112 @@ addToLibrary({
   $krkr2PthreadCreateOriginal__deps:
       LibraryManager.library.__pthread_create_js__deps,
   $krkr2SpawnThreadOriginal: LibraryManager.library.$spawnThread,
+  $krkr2GetWasmTableEntryOriginal:
+      LibraryManager.library.$getWasmTableEntry,
+  $krkr2GetWasmTableEntryOriginal__deps:
+      LibraryManager.library.$getWasmTableEntry__deps,
+
+  // A suspended promising export does not make a later, synchronous JS ->
+  // Wasm callback suspendable. Keep that distinction at the actual SDK entry
+  // boundaries, including continuations resumed after the initial call.
+  $krkr2JspiContext__deps: ['$Asyncify'],
+  $krkr2JspiContext: {
+    pending: 0,
+    entry: null,
+    asyncEntries: new WeakSet(),
+    syncEntries: new WeakMap(),
+
+    canSuspend() {
+      return this.entry === true || this.entry === null && this.pending > 0;
+    },
+
+    asynchronous(func) {
+      var wrapped = (...args) => {
+        var previous = this.entry;
+        this.entry = true;
+        ++this.pending;
+        var promise;
+        try {
+          promise = func(...args);
+        } catch (error) {
+          --this.pending;
+          throw error;
+        } finally {
+          this.entry = previous;
+        }
+        return Promise.resolve(promise).then((value) => {
+          --this.pending;
+          return value;
+        }, (error) => {
+          --this.pending;
+          throw error;
+        });
+      };
+      this.asyncEntries.add(wrapped);
+      return wrapped;
+    },
+
+    synchronous(func) {
+      if (this.asyncEntries.has(func)) return func;
+      var wrapped = this.syncEntries.get(func);
+      if (!wrapped) {
+        wrapped = (...args) => {
+          var previous = this.entry;
+          this.entry = false;
+          try {
+            return func(...args);
+          } finally {
+            this.entry = previous;
+          }
+        };
+        this.syncEntries.set(func, wrapped);
+      }
+      return wrapped;
+    },
+
+    promising(func) {
+      return this.asynchronous(WebAssembly.promising(func));
+    },
+
+    install() {
+      var makeAsync = Asyncify.makeAsyncFunction;
+      Asyncify.makeAsyncFunction = (func) =>
+          this.asynchronous(makeAsync.call(Asyncify, func));
+      var instrument = Asyncify.instrumentWasmExports;
+      Asyncify.instrumentWasmExports = (exports) => {
+        var instrumented = instrument.call(Asyncify, exports);
+        for (var [name, value] of Object.entries(instrumented)) {
+          if (typeof value === 'function') {
+            instrumented[name] = this.synchronous(value);
+          }
+        }
+        return instrumented;
+      };
+    },
+  },
+
+  $getWasmTableEntry__deps: ['$krkr2GetWasmTableEntryOriginal',
+                           '$krkr2JspiContext'],
+  $getWasmTableEntry: (pointer) => {
+    var func = krkr2GetWasmTableEntryOriginal(pointer);
+    // invokeEntryPoint in a pthread passes this raw function to
+    // WebAssembly.promising itself. Browser-only wait permission does not
+    // apply there, and a JS wrapper is not a valid promising() argument.
+    return ENVIRONMENT_IS_PTHREAD ? func : krkr2JspiContext.synchronous(func);
+  },
+
+  krkr2_futex_may_suspend__sig: 'i',
+  krkr2_futex_may_suspend__deps: ['$krkr2JspiContext'],
+  krkr2_futex_may_suspend: () => krkr2JspiContext.canSuspend() ? 1 : 0,
+  krkr2_futex_yield__sig: 'v',
+  krkr2_futex_yield__async: true,
+  krkr2_futex_yield__deps: ['$Asyncify'],
+  krkr2_futex_yield: () => Asyncify.handleAsync(
+      () => new Promise((resolve) => setTimeout(resolve, 0))),
 
   $krkr2PthreadJspi__deps: ['$PThread', '$Asyncify',
-                           '$krkr2SpawnThreadOriginal', '$terminateWorker'],
+                           '$krkr2SpawnThreadOriginal', '$terminateWorker',
+                           '$krkr2JspiContext'],
   $krkr2PthreadJspi__postset: 'krkr2PthreadJspi.install();',
   $krkr2PthreadJspi: {
     pending: new Map(),
@@ -37,6 +140,7 @@ addToLibrary({
 #endif
         return;
       }
+      krkr2JspiContext.install();
       const originalLoad = PThread.loadWasmModuleToWorker;
       PThread.loadWasmModuleToWorker = (worker) => {
         if (worker.krkr2LoadPromise) return worker.krkr2LoadPromise;

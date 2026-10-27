@@ -16,6 +16,8 @@ python3 .github/rpg-runtime/test-font-cell-height.py
 python3 .github/rpg-runtime/test-window-presentation.py
 python3 .github/rpg-runtime/test-sqlite.py
 node tests/web/sqlite_vlfs_publish.test.mjs
+python3 .github/rpg-runtime/test-pthread-futex.py
+node tests/web/pthread_jspi.test.mjs
 node tests/web/jspi_mainloop_scheduler.test.mjs
 node .github/rpg-runtime/test-vlfs.mjs
 python3 .github/rpg-runtime/test-release-assets.py

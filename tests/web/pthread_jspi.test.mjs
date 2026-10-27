@@ -14,6 +14,7 @@ function setup() {
   let callerState = 0;
   const workers = [];
   const failures = [];
+  const table = new Map();
   const fatal = () => { throw new Error('runtime thread error'); };
   const pthread = {
     unusedWorkers: [], pthreads: {},
@@ -52,6 +53,12 @@ function setup() {
       pthread_ptr: ptr, startRoutine: entry, arg,
     }),
     __pthread_create_js__deps: [],
+    $getWasmTableEntry(pointer) {
+      const original = table.get(pointer);
+      return context.Asyncify.isAsyncExport(original)
+        ? context.Asyncify.makeAsyncFunction(original) : original;
+    },
+    $getWasmTableEntry__deps: [],
     $spawnThread(params) {
       const worker = pthread.unusedWorkers.pop();
       assert.ok(worker.krkr2Ready, 'SDK must only receive a loaded worker');
@@ -65,7 +72,25 @@ function setup() {
     LibraryManager: {library: lib},
     addToLibrary: (items) => Object.assign(lib, items),
     PThread: pthread, ENVIRONMENT_IS_PTHREAD: false, Promise, Map,
-    Asyncify: {async handleAsync(fn) { ++suspensions; return await fn(); }},
+    Asyncify: {
+      asyncExports: new Set(),
+      isAsyncExport(func) { return this.asyncExports.has(func); },
+      makeAsyncFunction(func) {
+        return (...args) => Promise.resolve(func(...args));
+      },
+      instrumentWasmExports(exports) {
+        const result = {...exports};
+        if (exports.main) {
+          this.asyncExports.add(exports.main);
+          result.main = this.makeAsyncFunction(exports.main);
+        }
+        return result;
+      },
+      async handleAsync(fn) { ++suspensions; return await fn(); },
+    },
+    WebAssembly: {
+      promising: func => (...args) => Promise.resolve(func(...args)),
+    },
     terminateWorker: (worker) => { ++worker.terminations; },
     _krkr2_pthread_create_state: () => callerState,
     _krkr2_pthread_create_failed: (state, ptr) => {
@@ -82,7 +107,7 @@ function setup() {
     callerState = ptr + 999;
     return lib.__pthread_create_js(ptr, 0, 123, 456);
   };
-  return {context, pthread, lib, workers, failures, create, fatal,
+  return {context, pthread, lib, workers, failures, create, fatal, table,
           suspensions: () => suspensions,
           failAllocation: () => { failAllocation = true; }};
 }
@@ -205,3 +230,84 @@ for (const kind of ['constructor', 'error', 'messageerror', 'rejection', 'run'])
   assert.equal(checks, 1);
 }
 console.log('pthread JSPI worker reservation, reuse, proxy, failure and exit tests passed');
+
+// A pending promising export permits its resumed Wasm continuation to yield,
+// but never changes the calling convention of an unrelated synchronous entry.
+{
+  const s = setup();
+  let finish;
+  const rawMain = () => {
+    assert.equal(s.lib.krkr2_futex_may_suspend(), 1);
+    return new Promise(resolve => { finish = resolve; });
+  };
+  const expected = new Error('synchronous callback failure');
+  const sync = () => {
+    assert.equal(s.lib.krkr2_futex_may_suspend(), 0);
+    return 42;
+  };
+  const exports = s.context.Asyncify.instrumentWasmExports({
+    main: rawMain, sync,
+    throws() {
+      assert.equal(s.lib.krkr2_futex_may_suspend(), 0);
+      throw expected;
+    },
+  });
+  const pending = exports.main();
+  assert.equal(s.lib.krkr2_futex_may_suspend(), 1);
+  assert.equal(exports.sync(), 42);
+  assert.throws(exports.throws, error => error === expected);
+  assert.equal(s.lib.krkr2_futex_may_suspend(), 1);
+
+  s.table.set(10, sync);
+  const callback = s.lib.$getWasmTableEntry(10);
+  assert.equal(callback, s.lib.$getWasmTableEntry(10));
+  assert.equal(callback(), 42);
+  assert.equal(s.table.get(10), sync, 'raw Wasm table identity must be preserved');
+  assert.equal(s.context.Asyncify.isAsyncExport(rawMain), true);
+  assert.equal(s.context.Asyncify.isAsyncExport(sync), false);
+  finish(17);
+  assert.equal(await pending, 17);
+  assert.equal(s.lib.krkr2_futex_may_suspend(), 0);
+  assert.equal(exports.sync(), 42);
+
+  s.context.ENVIRONMENT_IS_PTHREAD = true;
+  assert.equal(s.lib.$getWasmTableEntry(10), sync,
+    'pthread entry must remain a raw Wasm function for SDK promising()');
+}
+
+// A rejected async entry must release its permission and propagate its error.
+{
+  const s = setup();
+  const expected = new Error('async entry failure');
+  const exports = s.context.Asyncify.instrumentWasmExports({
+    main: () => Promise.reject(expected),
+  });
+  await assert.rejects(exports.main(), error => error === expected);
+  assert.equal(s.lib.krkr2_futex_may_suspend(), 0);
+  const thrown = s.context.krkr2JspiContext.asynchronous(() => {throw expected;});
+  assert.throws(thrown, error => error === expected);
+  assert.equal(s.lib.krkr2_futex_may_suspend(), 0);
+}
+console.log('JSPI futex context preserves synchronous exports, callbacks and failures');
+
+// The main-loop shim constructs promising(table.get(...)) explicitly because
+// JSC can expose distinct function identities through exports and its table.
+{
+  const s = setup();
+  let finish;
+  const tick = s.context.krkr2JspiContext.promising(() => {
+    assert.equal(s.lib.krkr2_futex_may_suspend(), 1);
+    return new Promise(resolve => { finish = resolve; });
+  });
+  const pending = tick();
+  assert.equal(s.lib.krkr2_futex_may_suspend(), 1);
+  const callback = s.context.krkr2JspiContext.synchronous(() => {
+    assert.equal(s.lib.krkr2_futex_may_suspend(), 0);
+    return 7;
+  });
+  assert.equal(callback(), 7);
+  finish();
+  await pending;
+  assert.equal(s.lib.krkr2_futex_may_suspend(), 0);
+}
+console.log('JSPI main-loop context and raw pthread table entries are preserved');

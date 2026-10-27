@@ -1,4 +1,4 @@
-# 主线程 JSPI / pthread 按需创建
+# 浏览器主线程 JSPI 与 pthread
 
 此适配面向项目使用的 Emscripten 6.0.9。应用 `main()` 和游戏主循环仍在浏览器
 主线程执行，`std::thread` / `pthread_create()` 的调用点和线程函数保持不变。
@@ -46,6 +46,40 @@ Emscripten 6.0.9 `system/lib/pthread/pthread_create.c` 的失败分支会重置�
 
 安装的 SDK 和 `cpp/` 下的引擎实现不作修改。
 
+## 浏览器 futex 等待
+
+后台线程持有原生 mutex 并同步代理一次异步内容读取时，浏览器主线程可能同时
+等待该 mutex。SDK 6.0.9 在浏览器线程以忙循环模拟 futex：它会处理同步代理队列，
+但异步读取的 Promise 需要浏览器事件循环继续执行，才能唤醒持锁的后台线程。
+
+Web C 桥同时包装 `emscripten_futex_wait` 和 `_emscripten_yield`。仅在浏览器
+线程、可挂起的 Wasm 入口内等待 futex 时，于 SDK 已有的 yield 点让出一次
+浏览器事件循环。SDK 在这个位置已经暂时撤销主线程 wake 地址，并在返回后
+重新检查原子值；醒来、超时、取消和代理处理继续使用原实现。挂起后传入 0
+让 SDK 在需要处理计时器时读取当前时间，避免使用挂起前的旧时间戳。
+
+JSPI 没有“当前调用栈是否可挂起”的查询接口。适配因此在 SDK 实际入口处记录
+权限：`Asyncify.makeAsyncFunction` 的 promising 入口保持权限至 Promise 结束，
+主循环的显式 promising 包装使用同一记录器；普通导出和浏览器线程的普通函数表
+回调在执行期间遮蔽权限。后者仍同步返回原值或抛出原异常，因此 DOM 事件的
+`preventDefault` 判断、OpenAL 和 Host 同步回调不会因为另一个挂起的入口而
+获得挂起权限。原始 Wasm 导出集合和函数表本身不被替换。
+
+SDK 在 yield 期间撤销 wake 地址，原本只覆盖处理代理队列的短暂窗口；让出事件
+循环后窗口变成一整轮浏览器任务，不改变原子值的 `emscripten_futex_wake` 会因此
+丢失。桥同时包装 `emscripten_futex_wake`：挂起期间登记主线程正在等待的地址，
+唤醒方用一次 CAS 将对齐地址替换为通知标记，同时完成认领和结果发布，避免
+主线程恢复后漏掉尚未写入的通知。它按 SDK 的主线程计数规则（`INT_MAX` 不计入）
+返回，并继续唤醒 worker 等待者。主线程恢复后以原子交换取回通知，在进入 SDK
+代理队列处理前保存到当前等待的栈帧，避免队列 mutex 的嵌套等待覆盖外层结果。
+随后经 SDK 已有的 yield 中断出口离开循环，等待包装再把这次中断转换为普通
+唤醒结果 0。嵌套的普通同步等待仍沿用 SDK 撤销标记的行为。
+
+后台 pthread 的函数表返回值保持 SDK 原值。`invokeEntryPoint` 会自行把这个
+原生 Wasm 函数交给 `WebAssembly.promising`，不能在其外添加普通 JS 包装。
+普通同步入口中的 futex 等待仍使用 SDK 的同步行为；增加新的回调时必须继续
+审查其能否进入可能挂起的调用链。
+
 ## 构建和边界
 
 项目默认 `KRKR2_WEB_PTHREAD_POOL_SIZE=0`。已有 CMake cache 可能还保存旧值，
@@ -64,10 +98,9 @@ cmake --build out/web/debug
 暂停下一帧调度。新增浏览器回调或全局构造中的线程创建需要单独审查，不能假定
 普通 JS → Wasm 回调允许挂起。
 
-本适配只等待 Worker 可承载线程，不保证线程函数已经执行，也不把 `join`、锁或
-条件变量自动变成异步等待。主线程持锁挂起时仍需避免回调重入或相互等待。
-若主线程同步 join 一个还要动态创建子线程、读取异步文件的后台线程，仍可能
-阻塞后续操作所需的事件循环。
+创建路径只等待 Worker 可承载线程，不保证线程函数已经执行。浏览器线程的
+可挂起入口在 futex 争用期间允许异步内容代理完成；普通同步回调保持同步，
+仍须避免在其中等待只能由后续浏览器事件完成的工作。
 
 当前不支持 `OFFSCREENCANVAS_SUPPORT` 的单向 transferable 创建路径，编译时
 明确拒绝该组合。当前项目的 WebGL 上下文留在主线程，不需要这个选项。
@@ -80,7 +113,13 @@ cmake --build out/web/debug
 
 ```sh
 node tests/web/pthread_jspi.test.mjs
+python3 .github/rpg-runtime/test-pthread-futex.py
 ```
+
+原生 C 回归直接包含实际桥代码，控制唤醒认领后的 worker 抢占和 SDK yield 内的
+递归等待；旧实现的两个用例均会出现 wake 返回 1、wait 仍超时。SDK stub 只用于
+确定复现这两个状态交错，不能替代下面的真实 JSPI 浏览器测试。两组测试均已纳入
+`check-source.sh`。
 
 真实浏览器专项测试（已 source emsdk，必须将 `.c` 按 C 编译）：
 
@@ -96,6 +135,8 @@ em++ tests/web/pthread_jspi_smoke.cpp \
   -sDEFAULT_PTHREAD_STACK_SIZE=1048576 \
   -Wl,--wrap=pthread_create -Wl,--wrap=__pthread_create \
   -Wl,--wrap=emscripten_builtin_pthread_create \
+  -Wl,--wrap=emscripten_futex_wait -Wl,--wrap=emscripten_futex_wake \
+  -Wl,--wrap=_emscripten_yield \
   -O1 -o out/pthread-jspi-validation/smoke.html
 python3 coi-server.py out 18080 18443
 ```
@@ -104,7 +145,8 @@ python3 coi-server.py out 18080 18443
 `http://localhost:18080/pthread-jspi-validation/smoke.html`，页面标题应变为
 `pthread JSPI PASS`。测试覆盖 32 条同时存活的 std::thread、64 次复用、128 次显式
 `pthread_exit` / join / 复用、后台创建
-冷 Worker、失败回滚和内存释放、C++ 异常、后台失败后的恢复；并断言应用 main
+冷 Worker、失败回滚和内存释放、C++ 异常、后台失败后的恢复、后台持锁期间的
+异步代理完成、挂起 main 期间普通导出及函数表回调的同步返回；并断言应用 main
 始终在浏览器主线程。测试故意使用部分同步 join，会触发 SDK 的主线程阻塞提示。
 
 预热测试增加 `-DWARM_POOL` 并改成 `-sPTHREAD_POOL_SIZE=2`。ASan 测试须对 C
@@ -128,3 +170,18 @@ python3 coi-server.py out 18080 18443
 
 本次本机截图、浏览器结果、构建日志和源文件/产物 SHA-256 保存在
 `out/pthread-jspi-validation/`，汇总为 `validation.json`；该目录不入库。
+
+### 2026-10-26 验证记录
+
+- SDK 6.0.9、Chrome for Testing 149.0.7827.55：新增的持锁异步代理用例在
+  原适配中稳定阻塞浏览器主线程，更新后完成。
+- 零预热、预热 2 个 Worker、ASan 三组完整 smoke 均通过，包括两个普通同步
+  入口在挂起 main 期间的短超时 futex、32 个并存线程、64 次复用、128 次显式
+  `pthread_exit`、冷子线程创建、失败回滚和恢复。
+- 入口权限、原始函数表身份、同步返回值和异常、主循环排空的 Node 测试通过。
+- 后续审查补充了唤醒 CAS 后 worker 被抢占、代理队列递归等待两个确定性回归：
+  原实现均返回超时，合并原子通知状态并按等待栈帧保存结果后均通过。完整
+  `check-source.sh`、核心候选构建和候选完整性校验通过。
+- 补充修复后的冷启动、预热 2 个 Worker、ASan 三组真实浏览器 smoke 均通过，
+  结果和截图保存在同一 PFB 的 Retrom `.pfb/evidence/smoke-suite-result.json`
+  与 `smoke-{cold,warm,asan}.png`。专项 smoke 本身不代表完整游戏产品验收。

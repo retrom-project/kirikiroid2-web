@@ -47,7 +47,7 @@ const context = vm.createContext({
       return () => {};
     },
   },
-  WebAssembly: {
+  krkr2JspiContext: {
     promising() {
       return (...args) => tickImplementation(...args);
     },
@@ -176,7 +176,7 @@ for (const order of ["running", "stop-before-abort", "abort-before-stop", "stop-
     setMainLoop(fn) { loop.func = fn; loop.scheduler = () => {}; },
     handleException(error) { errors.push(error); },
     wasmTable: {get() { return () => {}; }},
-    WebAssembly: {promising() { return () => tick; }},
+    krkr2JspiContext: {promising() { return () => tick; }},
     URLSearchParams, performance: {now: () => 0}, location: {search: ""},
     requestAnimationFrame() {}, Promise, Map, Number, Object, document: {},
   });
@@ -231,7 +231,7 @@ console.log("Native bookmark idle boundary tests passed");
     setMainLoop(fn) { loop.func = fn; loop.scheduler = () => {}; },
     handleException(error) { throw error; },
     wasmTable: {get() { return () => {}; }},
-    WebAssembly: {promising() { return () => tick; }},
+    krkr2JspiContext: {promising() { return () => tick; }},
     URLSearchParams, performance: {now: () => 0}, location: {search: ""},
     requestAnimationFrame() {}, Promise, Map, Number, Object, document: {},
   });
@@ -270,7 +270,7 @@ for (const rejectOperation of [false, true]) {
     setMainLoop(fn) { loop.func = fn; loop.scheduler = () => {}; },
     handleException(error) { throw error; },
     wasmTable: {get() { return () => {}; }},
-    WebAssembly: {promising() { return () => Promise.resolve(); }},
+    krkr2JspiContext: {promising() { return () => Promise.resolve(); }},
     URLSearchParams, performance: {now: () => 0}, location: {search: ""},
     requestAnimationFrame() {}, Promise, Map, Number, Object, document: {},
   });

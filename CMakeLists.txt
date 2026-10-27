@@ -156,6 +156,9 @@ elseif(WEB)
         -Wl,--wrap=pthread_create
         -Wl,--wrap=__pthread_create
         -Wl,--wrap=emscripten_builtin_pthread_create
+        -Wl,--wrap=emscripten_futex_wait
+        -Wl,--wrap=emscripten_futex_wake
+        -Wl,--wrap=_emscripten_yield
         -fwasm-exceptions
         $<$<BOOL:${KRKR2_WEB_ENABLE_SOURCE_MAP}>:-gsource-map>
         $<$<CONFIG:Debug>:--emit-symbol-map>
