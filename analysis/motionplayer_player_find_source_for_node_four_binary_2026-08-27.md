@@ -157,7 +157,10 @@ signed int转换使用各ISA FP conversion，finite in-range为toward-zero；NaN
 ## 7. 本地差异与证据后修改
 
 主路由、owner、泄漏、cache、strict/try lookup、partial stores和fallback均与四端共同结构一致。
-确认的不匹配只有diagnostic chain：
+本轮确认了下列 diagnostic chain 差异；这不是完整 receiver 审计。2026-10-28 四参考重新
+反编译还发现 Win atlas miss 错用了默认 manager，见
+[Win atlas 私有 GL 复核](motionplayer_win_atlas_private_gl_manager_four_binary_2026-10-28.md)。
+该 receiver 也必须恢复为四端的私有 named-opengl getter。
 
 1. function local `tracePath`；
 2. spec-2对module ttstr额外 `AsStdString`；
