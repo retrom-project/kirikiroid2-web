@@ -50,6 +50,11 @@ set(_KRKR2_NCBIND_SOURCES
     layerExBTOA.cpp
     layerExRaster.cpp
     PackinOne.cpp
+    datapack/DataPack.cpp
+    datapack/Reader.cpp
+    datapack/Crypt.cpp
+    datapack/Carrier.cpp
+    datapack/VariantArchive.cpp
     DrawDeviceD3D.cpp
     textrender/TextRender.cpp
     extrans/Main.cpp
@@ -132,6 +137,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC krkr2core)
 
 find_package(lz4 CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE lz4::lz4)
+target_link_libraries(krkr2plugins_ncbind PRIVATE lz4::lz4)
 
 add_subdirectory(psdfile)
 add_subdirectory(psbfile)
