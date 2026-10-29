@@ -46,6 +46,7 @@
 #include "Platform.h"
 #include "ConfigManager/IndividualConfigManager.h"
 #ifdef __EMSCRIPTEN__
+#include "../../environ/web/HostArguments.h"
 #include "../../environ/web/HostNativeExit.h"
 #include "Exception.h"
 #endif
@@ -496,7 +497,16 @@ void TVPEnsureDataPathDirectory() {
 }
 
 //---------------------------------------------------------------------------
-static void PushAllCommandlineArguments() {}
+static void PushAllCommandlineArguments() {
+#ifdef __EMSCRIPTEN__
+    // The browser supplies an explicit argv source instead of an OS launcher.
+    // Replay it through the original parser on both option-stock passes, so
+    // the initialization clear preserves native ordering and priority rules.
+    for(const auto &argument : TVPGetWebCommandLineArguments())
+        TVPProgramArguments.push_back(
+            TVPParseCommandLineOne(ttstr(argument.c_str())));
+#endif
+}
 
 //---------------------------------------------------------------------------
 static void PushConfigFileOptions(const std::vector<std::string> *options) {

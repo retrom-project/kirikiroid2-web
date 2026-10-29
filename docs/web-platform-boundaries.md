@@ -119,6 +119,49 @@ connection does not constitute persistence. The standalone real-SQLite and
 production-VLFS tests cover this storage boundary, not every game's save UI or
 an engine/browser restart.
 
+## Explicit local Steam plugin service
+
+The Web build exposes `_krkr2_host_local_steam_service_abi()` returning 1.
+This enables an optional local backend for the `krkrsteam.dll` script protocol;
+it does not initialize Valve's SDK or contact an online account. The host must
+explicitly set `Module.retromLocalSteamService = true` before startup. Without
+that selection, initialization and restart requests fail with
+`KIRIKIRI_STEAM_LOCAL_SERVICE_DISABLED`. Existing/default games do not silently
+receive local success in place of an online service.
+
+`restartAppIfNecessary(appId)` validates and selects a positive uint32 appId
+from the script's public API call. The local backend needs no process restart,
+so it returns false. Changing an initialized app namespace is rejected.
+`initializeSteamAPI()` reads and validates the complete local statistics file,
+or publishes a real empty file, before marking statistics ready.
+`requestInitialize()` reports that actual readiness; no asynchronous native
+callback or TJS object is retained. Prepare-exit clears the in-memory service.
+
+Achievement IDs are exact, case-sensitive strings, limited to 1024 UTF-8 bytes.
+Set and clear publish the complete state before committing memory or returning
+success. Existing unlock timestamps are retained on repeated sets; clear records
+an unlocked state of false with timestamp zero. Lookup supports an exact known
+ID or a zero-based index over the local records in lexical ID order. Unknown
+records return Void. The result dictionary contains the actual `ach`,
+`achieved` and Unix `unlockTime`; `name` and `desc` are empty because this
+backend has no display-metadata catalog. `achievementsCount` counts known local
+records, not a remote catalog. No title, achievement name, content digest or
+fixed appId determines behavior.
+
+State is bounded to 1 MiB and 4096 records in the original managed
+`TVPDataPath/steam-local/<appId>.dat` namespace. It uses an eight-byte
+`KIRI-SL\0` marker, little-endian uint32 appId/count, followed by each uint32
+UTF-8 ID length, ID bytes and uint32 unlock timestamp. Invalid, duplicate,
+truncated, oversized or mismatched-app state fails initialization without
+overwriting the file. The complete raw file travels with the next real native
+GAME_SAVE and is imported before the next initialization. Local-service writes
+do not claim game progress or create a separate browser database.
+
+Remote login, entitlement, DLC, cloud and broadcast methods are not registered.
+Screenshot requests report `KIRIKIRI_STEAM_SCREENSHOT_UNSUPPORTED` until an
+actual host capture service is available. The local backend therefore does not
+claim complete Steamworks support. Non-Web builds retain their prior modules.
+
 ## Native GAME_SAVE observation
 
 `_krkr2_host_observe_game_saves()` installs a transparent observer on the current
