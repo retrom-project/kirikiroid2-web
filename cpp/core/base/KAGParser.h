@@ -162,6 +162,8 @@ public:
 
 protected:
     virtual bool CanRecordInlineScript() const { return false; }
+    virtual bool HasExtendedControlFlow() const { return false; }
+    void InitializeExtendedControlFlow();
 
 private:
     iTJSDispatch2 *Owner; // owner object
@@ -193,6 +195,37 @@ private:
     tjs_uint MacroArgStackDepth;
     tjs_uint MacroArgStackBase;
 
+    // ExtKAGParser owns a real script Array of local Dictionary objects.
+    // The base instance leaves this Variant void and never uses these states.
+    tTJSVariant LocalVariables;
+    ttstr WhileLevelExp;
+    ttstr WhileLevelEach;
+
+    struct tWhileStackData {
+        ttstr Storage;
+        ttstr Label;
+        tjs_int Offset;
+        ttstr OrgLineStr;
+        ttstr LineBuffer;
+        tjs_int Pos;
+        bool LineBufferUsing;
+        tjs_int ExcludeLevel;
+        tjs_int IfLevel;
+        ttstr WhileLevelExp;
+        ttstr WhileLevelEach;
+
+        tWhileStackData(const ttstr &storage, const ttstr &label,
+                        tjs_int offset, const ttstr &orglinestr,
+                        const ttstr &linebuffer, tjs_int pos,
+                        bool linebufferusing, tjs_int excludelevel,
+                        tjs_int iflevel, const ttstr &exp, const ttstr &each) :
+            Storage(storage), Label(label), Offset(offset),
+            OrgLineStr(orglinestr), LineBuffer(linebuffer), Pos(pos),
+            LineBufferUsing(linebufferusing), ExcludeLevel(excludelevel),
+            IfLevel(iflevel), WhileLevelExp(exp), WhileLevelEach(each) {}
+    };
+    std::vector<tWhileStackData> WhileStack;
+
     struct tCallStackData {
         ttstr Storage; // caller storage
         ttstr Label; // caller nearest label
@@ -207,6 +240,8 @@ private:
         std::vector<bool> IfLevelExecutedStack;
         tjs_int ExcludeLevel;
         tjs_int IfLevel;
+        tjs_uint WhileStackDepth;
+        tjs_int LocalVariablesCount;
 
         tCallStackData(const ttstr &storage, const ttstr &label, tjs_int offset,
                        const ttstr &orglinestr, const ttstr &linebuffer,
@@ -215,14 +250,17 @@ private:
                        const std::vector<tjs_int> &excludelevelstack,
                        tjs_int excludelevel,
                        const std::vector<bool> &iflevelexecutedstack,
-                       tjs_int iflevel) :
+                       tjs_int iflevel, tjs_uint whilestackdepth = 0,
+                       tjs_int localvariablescount = 0) :
             Storage(storage), Label(label), Offset(offset),
             OrgLineStr(orglinestr), LineBuffer(linebuffer), Pos(pos),
             LineBufferUsing(linebufferusing),
             MacroArgStackBase(macroargstackbase),
             MacroArgStackDepth(macroargstackdepth),
             ExcludeLevelStack(excludelevelstack), ExcludeLevel(excludelevel),
-            IfLevelExecutedStack(iflevelexecutedstack), IfLevel(iflevel) {}
+            IfLevelExecutedStack(iflevelexecutedstack), IfLevel(iflevel),
+            WhileStackDepth(whilestackdepth),
+            LocalVariablesCount(localvariablescount) {}
     };
 
     std::vector<tCallStackData> CallStack;
@@ -306,8 +344,25 @@ private:
     void FindNearestLabel(tjs_int start, tjs_int &labelline, ttstr &labelname);
 
     void PushCallStack();
+    void PushCallStack(const tTJSVariant &copyvar, iTJSDispatch2 *args);
 
     void PopCallStack(const ttstr &storage, const ttstr &label);
+
+    void PushWhileStack();
+    void PopWhileStack(bool rewind);
+    void WhileStackControlForEndwhile(bool repeat);
+    void ClearWhileStack();
+    void ClearWhileStackToTheLatestCallStack();
+    void CheckWhileStack();
+
+    tjs_int GetLocalVariablesCount() const;
+    void ResetLocalVariables();
+    void PushLocalVariables(const tTJSVariant &copyvar, iTJSDispatch2 *args);
+    void PopLocalVariables();
+    void PopLocalVariablesBeforeTheLatestCallStack();
+    void ApplyLocalArguments(iTJSDispatch2 *args);
+    void StoreExtendedState(iTJSDispatch2 *dic);
+    void RestoreExtendedState(iTJSDispatch2 *dic);
 
     void StoreIntStackToDic(iTJSDispatch2 *dic, std::vector<tjs_int> &stack,
                             const tjs_char *membername);
