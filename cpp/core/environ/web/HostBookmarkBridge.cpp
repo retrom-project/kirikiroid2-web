@@ -139,6 +139,7 @@ iTJSDispatch2 *retainDispatch(iTJSDispatch2 *value) {
 std::uint32_t game_save_sequence = 0;
 std::size_t game_save_depth = 0;
 bool game_save_flushing = false;
+bool game_save_failed = false;
 
 struct GameSaveFlushScope final {
     GameSaveFlushScope() { game_save_flushing = true; }
@@ -157,6 +158,7 @@ public:
     explicit GameSaveCall(bool tracked)
         : tracked_(tracked), outermost_(tracked && game_save_depth++ == 0) {
         if(outermost_) {
+            game_save_failed = false;
             // A bounded positive integer is exact in JavaScript. A new id may
             // only wrap after billions of completed, non-overlapping saves.
             game_save_sequence = (game_save_sequence % 0x7fffffffU) + 1;
@@ -166,7 +168,7 @@ public:
     }
 
     void complete(tjs_error status, const tTJSVariant &result) noexcept {
-        if(!outermost_) return;
+        if(!tracked_) return;
         // Extracted KAG/KAGEX methods return integer true/false. A wrapper that
         // discards that return is only a non-rejection witness: the Host must
         // also observe nonempty native file writes within this call's id.
@@ -174,11 +176,16 @@ public:
             (result.Type() == tvtVoid ||
              (result.Type() == tvtInteger && result.operator bool()));
         completed_ = true;
-        krkr2_host_notify_game_save(1, id_, success ? 1 : 0);
+        game_save_failed = game_save_failed || !success;
+        if(outermost_)
+            krkr2_host_notify_game_save(1, id_, game_save_failed ? 0 : 1);
     }
 
     ~GameSaveCall() {
-        if(outermost_ && !completed_) krkr2_host_notify_game_save(1, id_, 0);
+        if(tracked_ && !completed_) {
+            game_save_failed = true;
+            if(outermost_) krkr2_host_notify_game_save(1, id_, 0);
+        }
         if(tracked_) --game_save_depth;
     }
 };
@@ -301,7 +308,8 @@ int observeGameSaves() noexcept {
         game_save_watch.reset();
         if(!kag || method.Type() != tvtObject || !method.AsObjectNoAddRef() ||
            method.AsObjectNoAddRef()->IsInstanceOf(0, nullptr, nullptr,
-               TJS_W("Function"), method.AsObjectNoAddRef()) != TJS_S_TRUE) return 0;
+               TJS_W("Function"), method.AsObjectNoAddRef()) != TJS_S_TRUE)
+            return script.value ? 1 : 0; // Built-in structured-file observer.
         auto watch = std::make_unique<GameSaveWatch>(kag, method);
         if(!watch->install()) return kMethodUnavailable;
         game_save_watch = std::move(watch);
@@ -839,7 +847,23 @@ void TVPWebRequestNativeExit(int status) {
     krkr2_host_notify_native_exit(status);
 }
 
-// 0: startup/tick/method not ready; 1: observing the current KAG save method;
+// Native serializer writes use the same transaction depth as observed KAG calls.
+// The caller invokes this only after validating an image-backed file prefix.
+void *TVPBeginGameSaveObservation() noexcept {
+    if(!TVPStartupSuccess || native_exit_requested || game_save_flushing) return nullptr;
+    try { return new GameSaveCall(true); }
+    catch(...) { return nullptr; }
+}
+
+void TVPEndGameSaveObservation(void *call, bool success) noexcept {
+    if(!call) return;
+    auto *observed = static_cast<GameSaveCall *>(call);
+    const tTJSVariant result;
+    observed->complete(success ? TJS_S_OK : TJS_E_FAIL, result);
+    delete observed;
+}
+
+// 0: startup/tick not ready; 1: native serializers and optional KAG observed;
 // -3: member read/write/detach failed; -5: TJS lookup/installation exception.
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_observe_game_saves() {
     return observeGameSaves();
@@ -863,7 +887,7 @@ static int flushNativeSystemData(bool closing) {
         if(script.value->PropGet(TJS_IGNOREPROP, TJS_W("kag"), nullptr,
                                  &kag_value, script.value) != TJS_S_OK ||
            kag_value.Type() != tvtObject || !kag_value.AsObjectNoAddRef())
-            return kKagUnavailable;
+            return 0;
         auto *kag = kag_value.AsObjectNoAddRef();
         // Games may invalidate their own KAG while accepting window close.
         // Only confirmed shutdown can skip that already unavailable receiver.

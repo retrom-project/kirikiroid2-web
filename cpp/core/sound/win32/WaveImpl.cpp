@@ -2686,7 +2686,10 @@ void tTJSNI_WaveSoundBuffer::FillL2BufferAsync(
     if(!fromdecodethread && Thread->GetRunning())
         Thread->SetPriority(ttpHighest);
 
-    iTJSDispatch2 *keepAlive = Owner;
+    // TJS reference counts are not atomic, so only main-thread fills pin the
+    // owner. A decoder-thread fill needs no pin: Interrupt() waits on
+    // OneLoopCS for this iteration and Invalidate() joins the thread first.
+    iTJSDispatch2 *keepAlive = fromdecodethread ? nullptr : Owner;
     if(keepAlive)
         keepAlive->AddRef();
 

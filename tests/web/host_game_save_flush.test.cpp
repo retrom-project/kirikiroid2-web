@@ -65,6 +65,7 @@ int main() {
 
     kag.properties.clear();
     global.properties.clear();
+    assert(flush() == 0); // Independent native frameworks have no KAG callback.
     testGlobal = nullptr;
     assert(native.references == 1 && kag.references == 1 && bound.references == 1);
 }

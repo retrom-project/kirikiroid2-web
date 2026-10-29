@@ -453,6 +453,18 @@ class tTVPTJSGCCallback : public tTVPCompactEventCallbackIntf {
 //---------------------------------------------------------------------------
 static bool TVPScriptEngineInit = false;
 
+#ifdef __EMSCRIPTEN__
+static bool TVPWebKirikiriZ = false;
+
+extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_set_engine_mode(int mode) {
+    if(TVPScriptEngineInit || (mode != 0 && mode != 1))
+        return -1;
+    TVPWebKirikiriZ = mode == 1;
+    return 0;
+}
+
+#endif
+
 void TVPInitScriptEngine() {
     if(TVPScriptEngineInit)
         return;
@@ -508,8 +520,13 @@ void TVPInitScriptEngine() {
     // create script engine object
     TVPScriptEngine = new tTJS();
 
-    // add kirikiriz
-    //	TVPScriptEngine->SetPPValue( TJS_W("kirikiriz"), 1 );
+#ifdef __EMSCRIPTEN__
+    // The browser does not execute the project's native engine executable.
+    // Its explicitly selected script mode must be set before any compilation;
+    // the default preserves Kirikiroid2's original preprocessing behavior.
+    if(TVPWebKirikiriZ)
+        TVPScriptEngine->SetPPValue(TJS_W("kirikiriz"), 1);
+#endif
 
     // set TJSGetRandomBits128
     TJSGetRandomBits128 = TVPGetRandomBits128;
@@ -1039,22 +1056,10 @@ void TVPExecuteStartupScript() {
         ttstr place(TVPSearchPlacedPath(TVPStartupScriptName));
         spdlog::info("Loading startup script: {}", place.AsStdString());
         TVPStartupSuccess = false;
-        try {
-            iTJSTextReadStream *stream = TVPCreateTextStreamForRead(place, "");
-            stream->Destruct();
-            TVPExecuteStorage(TVPStartupScriptName);
-            TVPStartupSuccess = true;
-        } catch(...) {
-            if(!TVPIsExistentStorage(TJS_W("system/Initialize.tjs"))) {
-                throw;
-            }
-        }
-        if(!TVPStartupSuccess) {
-            // try direct execute initialize.tjs to compatible for
-            // some patch
-            TVPExecuteStorage(TJS_W("system/Initialize.tjs"));
-            TVPStartupSuccess = true;
-        }
+        iTJSTextReadStream *stream = TVPCreateTextStreamForRead(place, "");
+        stream->Destruct();
+        TVPExecuteStorage(TVPStartupScriptName);
+        TVPStartupSuccess = true;
         spdlog::info("Startup script ended.");
         try {
             ttstr patch = TVPGetAppPath() + "AfterStartup.tjs";

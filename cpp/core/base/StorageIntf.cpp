@@ -26,6 +26,9 @@
 #include "SysInitIntf.h"
 #include "XP3Archive.h"
 #include "TickCount.h"
+#ifdef __EMSCRIPTEN__
+#include "../environ/web/HostResourceOverlay.h"
+#endif
 
 #define TVP_DEFAULT_ARCHIVE_CACHE_NUM 64
 #define TVP_DEFAULT_AUTOPATH_CACHE_NUM 256
@@ -1121,6 +1124,13 @@ static tjs_uint TVPRebuildAutoPathTable() {
 // TVPGetPlacedPath
 //---------------------------------------------------------------------------
 ttstr TVPGetPlacedPath(const ttstr &name) {
+#ifdef __EMSCRIPTEN__
+    {
+        tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
+        const auto overlay = TVPWebFindResourceOverlay(name);
+        if(!overlay.IsEmpty()) return overlay;
+    }
+#endif
     // search path and return the path which the "name" is placed.
     // returned name is normalized. returns empty string if the
     // storage is not found.
