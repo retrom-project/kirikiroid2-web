@@ -81,6 +81,17 @@ VLFS 的文件内容只能异步取得，因此保留下列 continuation：
 额外的 owner 引用由栈上 guard 持有到恢复后的状态提交/异常清理结束，避免异步期间对象
 失效，也保证异常路径释放引用。
 
+TJS 对象引用计数（`tTJSDispatch::AddRef/Release`）不是原子操作，只能在主线程增减。
+Web `FillL2BufferAsync()` 仅在主线程调用时为 owner 增加引用，并经
+`TVPReleaseWaveSoundOwnerOnMain()` 在主线程释放；decode thread 调用不增加 owner
+引用。decode thread 的一次循环在 `OneLoopCS` 内等待填充 completion，`Interrupt()` 先
+取得同一临界区，`Invalidate()` 再 join 该线程，因此 NI 生命周期已覆盖这次填充。
+2026-10-30 复现：持续推进剧情时，`open()` 恢复后同步投递 `onStatusChanged`，
+`ExecuteAsFunction` 释放寄存器槽中已回收的对象，报 `table index is out of bounds`。
+诊断确认 JSPI 暂停期间没有执行 TJS，寄存器栈也未改变；移除 decode thread 的 owner
+引用后不再复现。引用计数增量丢失是据代码推断的机制，未用 ASan 直接观测。这是 Web 异步适配层约束，四个参考二进制同步执行
+`FillL2Buffer`，没有对应的 owner 引用。
+
 ### `play()`
 
 `StartPlayAsync()` 只在短临界区内创建 sound buffer、reset filter chain 并标记
