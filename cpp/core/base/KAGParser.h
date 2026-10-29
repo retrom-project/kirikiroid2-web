@@ -160,6 +160,9 @@ public:
 
     void Invalidate() override;
 
+protected:
+    virtual bool CanRecordInlineScript() const { return false; }
+
 private:
     iTJSDispatch2 *Owner; // owner object
 
@@ -368,6 +371,7 @@ public:
 };
 
 extern iTJSDispatch2 *TVPCreateNativeClass_KAGParser();
+extern iTJSDispatch2 *TVPCreateNativeClass_ExtKAGParser();
 
 
 #endif

@@ -1417,9 +1417,8 @@ void tTJSNI_KAGParser::CallLabel(const ttstr &name) {
 //---------------------------------------------------------------------------
 bool tTJSNI_KAGParser::SkipCommentOrLabel() {
     // skip comment or label, and go to next line.
-    // fire OnScript event if [script] thru [endscript] ( or @script
-    // thru
-    // @endscript ) is found.
+    // Fire onScript for a complete standalone iscript block, or let the
+    // extended parser record it through the ordinary macro tag path.
     Scenario->EnsureLabelCache();
 
     CurPos = 0;
@@ -1473,7 +1472,7 @@ bool tTJSNI_KAGParser::SkipCommentOrLabel() {
              !TJS_strcmp(p, TJS_W("[iscript]\\")))) ||
            (p[0] == TJS_W('@') && (!TJS_strcmp(p, TJS_W("@iscript"))))) {
             // inline TJS script
-            if(RecordingMacro)
+            if(RecordingMacro && !CanRecordInlineScript())
                 TVPThrowExceptionMessage(TVPLabelOrScriptInMacro);
 
             ttstr script;
@@ -1491,7 +1490,14 @@ bool tTJSNI_KAGParser::SkipCommentOrLabel() {
                     break;
                 }
 
-                if(ExcludeLevel == -1) {
+                if(RecordingMacro) {
+                    for(const tjs_char *sp = p; *sp; sp++) {
+                        if(*sp == TJS_W('\'') || *sp == TJS_W('`'))
+                            script += TJS_W('`');
+                        script += *sp;
+                    }
+                    script += TJS_W("`\r`\n");
+                } else if(ExcludeLevel == -1) {
                     script += p;
                     script += TJS_W("\r\n");
                 }
@@ -1499,6 +1505,13 @@ bool tTJSNI_KAGParser::SkipCommentOrLabel() {
 
             if(CurLine == LineCount)
                 TVPThrowExceptionMessage(TVPKAGInlineScriptNotEnd);
+
+            if(RecordingMacro) {
+                LineBuffer = TJS_W("[eval exp='") + script + TJS_W("']");
+                LineBufferUsing = true;
+                CurLineStr = LineBuffer.c_str();
+                return true;
+            }
 
             // fire onScript callback event
             if(ExcludeLevel == -1) {
@@ -2782,12 +2795,26 @@ static iTJSNativeInstance *Create_NI_KAGParser() {
     return new tTJSNI_KAGParser();
 }
 
+namespace {
+    // ExtKAGParser has its own instance factory.  Sharing the existing parser
+    // implementation does not alter instances created from the base class.
+    class tTJSNI_ExtKAGParser : public tTJSNI_KAGParser {
+    protected:
+        bool CanRecordInlineScript() const override { return true; }
+    };
+
+    iTJSNativeInstance *Create_NI_ExtKAGParser() {
+        return new tTJSNI_ExtKAGParser();
+    }
+}
+
 //---------------------------------------------------------------------------
 // tTJSNC_KAGParser : KAGParser TJS native class
 //---------------------------------------------------------------------------
-iTJSDispatch2 *TVPCreateNativeClass_KAGParser() {
+static iTJSDispatch2 *TVPCreateKAGParserClass(
+    iTJSNativeInstance *(*createInstance)()) {
     tTJSNativeClassForPlugin *classobj =
-        TJSCreateNativeClassForPlugin(TJS_W("KAGParser"), Create_NI_KAGParser);
+        TJSCreateNativeClassForPlugin(TJS_W("KAGParser"), createInstance);
     // register native methods/properties
 #undef TJS_NCM_REG_THIS
 #define TJS_NCM_REG_THIS classobj
@@ -3152,4 +3179,12 @@ return classobj;
 }
 
 #undef TJS_NATIVE_CLASSID_NAME
+//---------------------------------------------------------------------------
+iTJSDispatch2 *TVPCreateNativeClass_KAGParser() {
+    return TVPCreateKAGParserClass(Create_NI_KAGParser);
+}
+
+iTJSDispatch2 *TVPCreateNativeClass_ExtKAGParser() {
+    return TVPCreateKAGParserClass(Create_NI_ExtKAGParser);
+}
 //---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ target_include_directories(krkr2_binary_accessor PUBLIC
 target_link_libraries(krkr2_binary_accessor PUBLIC krkr2core)
 
 set(_KRKR2_NCBIND_SOURCES
+    ExtKAGParser.cpp
     xp3filter.cpp
     shrinkCopy.cpp
     layerExBTOA.cpp
