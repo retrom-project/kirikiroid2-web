@@ -5,6 +5,8 @@
 // Keep the old bridge linkable so the red test reaches an actual successful
 // native save, rather than stopping at a missing-export compilation error.
 extern "C" int krkr2_host_observe_game_saves() __attribute__((weak));
+void *TVPBeginGameSaveObservation() noexcept __attribute__((weak));
+void TVPEndGameSaveObservation(void *, bool) noexcept __attribute__((weak));
 
 struct NativeSave final : iTJSDispatch2 {
     std::function<tjs_error(tjs_uint32, const tjs_char *, tjs_uint32 *,
@@ -258,13 +260,39 @@ int main() {
     assert(observe() == 1);
     // Install can be attempted before a method exists, without creating it.
     global.properties.erase(L"kag");
-    assert(observe() == 0);
+    assert(observe() == 1); // The built-in structured-file observer is ready.
     assert(current().AsObjectNoAddRef() == &native);
     global.properties[L"kag"] = tTJSVariant(&kag);
     kag.properties.erase(L"saveBookMarkToFile");
-    assert(observe() == 0);
+    assert(observe() == 1);
     krkr2_host_cancel_bookmark_load();
     assert(game_save_depth == 0);
+
+    // Reuse the native transaction fixture for independent serializer writes.
+    // No KAG receiver, hidden save request, or return-value substitution.
+    global.properties.erase(L"kag");
+    if(!TVPBeginGameSaveObservation || !TVPEndGameSaveObservation)
+        throw std::runtime_error("native structured-save transaction boundary unavailable");
+    beforeEvents = testGameSaveEvents.size();
+    void *outer = TVPBeginGameSaveObservation();
+    assert(outer && observe() == 0);
+    void *inner = TVPBeginGameSaveObservation();
+    TVPEndGameSaveObservation(inner, true);
+    assert(testGameSaveEvents.size() == beforeEvents + 1);
+    TVPEndGameSaveObservation(outer, true);
+    assert(game_save_depth == 0 && testGameSaveEvents.size() == beforeEvents + 2);
+    assert(testGameSaveEvents.back().success);
+    outer = TVPBeginGameSaveObservation();
+    TVPEndGameSaveObservation(outer, false);
+    assert(!testGameSaveEvents.back().success && game_save_depth == 0);
+    outer = TVPBeginGameSaveObservation();
+    inner = TVPBeginGameSaveObservation();
+    TVPEndGameSaveObservation(inner, false);
+    TVPEndGameSaveObservation(outer, true);
+    assert(!testGameSaveEvents.back().success && game_save_depth == 0);
+    TVPStartupSuccess = false;
+    assert(TVPBeginGameSaveObservation() == nullptr);
+    TVPStartupSuccess = true;
 
     result = tTJSVariant();
     wrapped = tTJSVariant();

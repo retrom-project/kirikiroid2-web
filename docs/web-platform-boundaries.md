@@ -2,7 +2,50 @@
 
 These are explicit browser platform boundaries, implemented from observed Web
 behavior and public contracts. They do not claim reconstruction of the four
-reference binaries. The TJS VM and game scripts are unchanged.
+reference binaries. Game scripts retain their original behavior.
+
+## Script engine selection
+
+An embedding browser can call `_krkr2_host_set_engine_mode(0)` for the original
+KiriKiri2 preprocessing behavior or `(1)` for Z preprocessing, from
+`Module.onRuntimeInitialized` before `main` starts. Invalid values and calls
+after script-engine initialization return -1; accepted selections return 0.
+The default is 0. Mode 1 sets only `kirikiriz=1` before any script compilation;
+it does not assert that every Z API or native plugin is supported. The browser
+cannot execute the project's Win32 PE engine to obtain this setting. No game
+identity or script error chooses a mode.
+
+Startup executes the selected entry once. An exception after partial
+initialization propagates through the existing exception boundary; it does not
+retry an internal project script against partially initialized globals.
+
+On Web, `win32dialog.dll` also declares the nested `Header` and `Items` template
+data models needed by portable dialog libraries at class-definition time.
+Their `store` method copies the supplied template fields. These declarations
+do not create a native Win32 window or claim a complete browser dialog backend.
+Window, dialog and basic control style families (`WS`, `DS`, `ES`, `BS`, `SS`,
+`LBS`, `CBS`, `LVS`, `TBS`, `ICC`) retain their public Windows SDK values in the
+`WIN32Dialog` namespace. The fact table comes from Microsoft's
+[WinUser.h](https://github.com/microsoft/win32metadata/blob/64ed9177fb76eb244fc9051c74b8a93fdfe20873/generation/WinSDK/RecompiledIdlHeaders/um/WinUser.h)
+and [CommCtrl.h](https://github.com/microsoft/win32metadata/blob/64ed9177fb76eb244fc9051c74b8a93fdfe20873/generation/WinSDK/RecompiledIdlHeaders/um/CommCtrl.h).
+The model constructor retains its event target, and `initCommonControlsEx`
+returns false because the browser cannot register native Windows controls.
+
+## Resource overlays
+
+`_krkr2_host_resource_overlay_abi()` returns 1 when the explicit Web resource
+search layer is supported. Before startup, the embedding runtime supplies
+`Module._resourceOverlayFiles` containing original virtual `path` and
+`relativePath` pairs from its validated project index. The default is empty.
+The original immutable filesystem tree remains unchanged.
+
+The layer indexes members of selected `.xp3` files individually, in lexical
+archive path order, then applies loose files. Lookup precedes the ordinary
+placed-path cache: resource-relative exact name first, unique basename second.
+Ambiguous basenames do not choose a resource. Explicit archive-member paths
+participate in the same lookup. Resources absent from the layer retain native
+archive/directory resolution. The layer does not replace whole base archives,
+execute a native patch loader or infer a directory from game identity.
 
 ## Window presentation
 
@@ -80,7 +123,8 @@ an engine/browser restart.
 
 `_krkr2_host_observe_game_saves()` installs a transparent observer on the current
 KAG `saveBookMarkToFile` method between drained engine ticks. It returns 0 while
-startup, a tick or the method is not ready, 1 when observing, -3 on member or
+startup or a tick is not ready, 1 when observing native serializers and any
+available KAG method, -3 on member or
 installation failure, and -5 on a lookup/installation exception.
 
 The original closure, receiver, arguments, return value and exception are
@@ -93,6 +137,18 @@ progress. False, dispatch failure and exceptions report an unsuccessful end.
 Notifications never request a native save or load. Teardown detaches the
 observer only after the active native stack has drained.
 
+Independent frameworks can persist an image-backed structured file through
+`Array.saveStruct` or `Dictionary.saveStruct`. A Web-only scope observes a
+nonempty string filename with an explicit positive `o` offset when the existing
+54-byte BMP header, uncompressed 24/32-bit pixel geometry and complete physical
+file size all agree with that offset. The original serializer appends data and
+closes its stream before successful completion is reported. No filename,
+extension, script class or object name selects this path. Nested KAG/serializer
+calls share one transaction; any nested failure makes it unsuccessful.
+Settings-only serialization provides no progress witness. Existing bridge tests
+cover transaction behavior; actual native files cover the BMP classification in
+product acceptance, without a separate standalone classifier fixture.
+
 Native bookmark files can contain both thumbnail pixels and serialized game
 data. Their names and suffixes do not identify progress. The host transfers
 complete final files and related user overlays, then imports them before normal
@@ -104,7 +160,7 @@ Before exporting a confirmed native save, the host drains the frame and invokes
 the JSPI export `_krkr2_host_flush_game_saves()`. It calls the game's registered
 `saveSystemVariables` closure to persist late save-menu bookkeeping as native
 files. It preserves a bound receiver and emits no progress notification. An
-absent optional callback returns 0, completion returns 1, and errors return a
+absent KAG receiver or optional callback returns 0, completion returns 1, and errors return a
 negative status that stops export. The host retains the suspended operation
 through cancellation. Normal native process exit already owns final persistence
 and does not reenter the script engine to flush after exit.

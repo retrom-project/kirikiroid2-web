@@ -15,6 +15,9 @@
 #include "tjsArray.h"
 #include "tjsBinarySerializer.h"
 #include "tjsDebug.h"
+#ifdef __EMSCRIPTEN__
+#include "../environ/web/HostStructuredSave.h"
+#endif
 
 namespace TJS {
     //---------------------------------------------------------------------------
@@ -147,6 +150,9 @@ namespace TJS {
             ttstr mode;
             if(numparams >= 2 && param[1]->Type() != tvtVoid)
                 mode = *param[1];
+#ifdef __EMSCRIPTEN__
+            tTVPStructuredSaveObservation observed(name, mode, param[0]->Type() == tvtString);
+#endif
 
             if(TJS_strchr(mode.c_str(), TJS_W('b')) != nullptr) {
                 tTJSBinaryStream *stream =
@@ -176,6 +182,9 @@ namespace TJS {
                 stream->Destruct();
             }
 
+#ifdef __EMSCRIPTEN__
+            observed.complete();
+#endif
             if(result)
                 *result = tTJSVariant(objthis, objthis);
 
