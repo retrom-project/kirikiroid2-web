@@ -10,6 +10,8 @@
 #include "tjsCommHead.h"
 #include "SysInitIntf.h"
 #include "HostNativeExit.h"
+#include "LayerIntf.h"
+#include "LayerBitmapIntf.h"
 
 #include <atomic>
 #include <cstdint>
@@ -30,15 +32,29 @@ EM_JS(int, krkr2_host_main_loop_is_idle, (), {
 // This is an observation of the game's original save call, not a request to
 // save or load. Host callbacks are synchronous notifications and must not
 // replace an original script result or exception with a JavaScript failure.
-EM_JS(void, krkr2_host_notify_game_save, (int phase, int id, int success), {
+EM_JS(void, krkr2_host_notify_game_save, (int phase, int id, int success, int history), {
     try {
         var callback = Module['onGameSave'];
         if (typeof callback === 'function') {
-            callback(phase === 0 ? {phase: 'begin', id: id}
+            callback(phase === 0 ? {phase: 'begin', id: id, history: history !== 0}
                                  : {phase: 'end', id: id, success: success !== 0});
         }
     } catch (error) {
         console.warn('[game-save] Host notification failed', error);
+    }
+});
+
+// The game's own representative image of a player save point, as RGBA rows.
+EM_JS(void, krkr2_host_publish_game_save_image, (int id, const unsigned char *pixels,
+                                                 int width, int height), {
+    try {
+        var callback = Module['onGameSaveImage'];
+        if (typeof callback === 'function') {
+            callback({id: id, width: width, height: height,
+                      pixels: HEAPU8.slice(pixels, pixels + width * height * 4)});
+        }
+    } catch (error) {
+        console.warn('[game-save] Host image notification failed', error);
     }
 });
 
@@ -155,7 +171,7 @@ class GameSaveCall final {
     int id_ = 0;
 
 public:
-    explicit GameSaveCall(bool tracked)
+    GameSaveCall(bool tracked, bool history)
         : tracked_(tracked), outermost_(tracked && game_save_depth++ == 0) {
         if(outermost_) {
             game_save_failed = false;
@@ -163,9 +179,12 @@ public:
             // only wrap after billions of completed, non-overlapping saves.
             game_save_sequence = (game_save_sequence % 0x7fffffffU) + 1;
             id_ = static_cast<int>(game_save_sequence);
-            krkr2_host_notify_game_save(0, id_, 0);
+            krkr2_host_notify_game_save(0, id_, 0, history ? 1 : 0);
         }
     }
+
+    [[nodiscard]] bool outermost() const { return outermost_; }
+    [[nodiscard]] int id() const { return id_; }
 
     void complete(tjs_error status, const tTJSVariant &result) noexcept {
         if(!tracked_) return;
@@ -178,24 +197,96 @@ public:
         completed_ = true;
         game_save_failed = game_save_failed || !success;
         if(outermost_)
-            krkr2_host_notify_game_save(1, id_, game_save_failed ? 0 : 1);
+            krkr2_host_notify_game_save(1, id_, game_save_failed ? 0 : 1, 0);
     }
 
     ~GameSaveCall() {
         if(tracked_ && !completed_) {
             game_save_failed = true;
-            if(outermost_) krkr2_host_notify_game_save(1, id_, 0);
+            if(outermost_) krkr2_host_notify_game_save(1, id_, 0, 0);
         }
         if(tracked_) --game_save_depth;
     }
 };
 
+// KAG3 thumbnails come from lockSnapshot(): it pile-copies fore.base, or keeps
+// the image a system menu locked before opening, so dialogs and save screens
+// on the primary layer are excluded. Host failures never affect the save call.
+class KagSnapshot final {
+    OwnedDispatch kag_;
+    bool locked_ = false;
+
+    bool call(const tjs_char *name) noexcept {
+        try {
+            tTJSVariant method;
+            if(kag_->PropGet(0, name, nullptr, &method, kag_.get()) != TJS_S_OK ||
+               method.Type() != tvtObject || !method.AsObjectNoAddRef()) return false;
+            tTJSVariant ignored;
+            return TJS_SUCCEEDED(method.AsObjectClosureNoAddRef().FuncCall(
+                0, nullptr, nullptr, &ignored, 0, nullptr, kag_.get()));
+        } catch(...) {
+            return false;
+        }
+    }
+
+public:
+    explicit KagSnapshot(iTJSDispatch2 *kag) : kag_(retainDispatch(kag)) {
+        locked_ = call(TJS_W("lockSnapshot"));
+    }
+
+    void publish(int id) noexcept {
+        if(!locked_) return;
+        try {
+            tTJSVariant value;
+            if(kag_->PropGet(0, TJS_W("snapshotLayer"), nullptr, &value, kag_.get()) != TJS_S_OK ||
+               value.Type() != tvtObject || !value.AsObjectNoAddRef()) return;
+            tTJSNI_BaseLayer *layer = nullptr;
+            if(TJS_FAILED(value.AsObjectNoAddRef()->NativeInstanceSupport(
+                   TJS_NIS_GETINSTANCE, tTJSNC_Layer::ClassID,
+                   reinterpret_cast<iTJSNativeInstance **>(&layer))) || !layer) return;
+            tTVPBaseTexture *image = layer->GetMainImage();
+            if(!image || !image->Is32BPP()) return;
+            const tjs_uint width = image->GetWidth(), height = image->GetHeight();
+            if(!width || !height || width > 8192 || height > 8192) return;
+            std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4);
+            for(tjs_uint y = 0; y < height; ++y) {
+                const auto *row = static_cast<const unsigned char *>(image->GetScanLine(y));
+                unsigned char *out = rgba.data() + static_cast<std::size_t>(y) * width * 4;
+                for(tjs_uint x = 0; x < width; ++x, row += 4, out += 4) {
+                    // Web layer memory is already R,G,B,A; snapshots are opaque.
+                    out[0] = row[0]; out[1] = row[1]; out[2] = row[2]; out[3] = 255;
+                }
+            }
+            krkr2_host_publish_game_save_image(id, rgba.data(), static_cast<int>(width),
+                                               static_cast<int>(height));
+        } catch(...) {
+        }
+    }
+
+    ~KagSnapshot() {
+        if(locked_) call(TJS_W("unlockSnapshot"));
+    }
+
+    KagSnapshot(const KagSnapshot &) = delete;
+    KagSnapshot &operator=(const KagSnapshot &) = delete;
+};
+
+// KAG3/KAGEX save player bookmarks as saveBookMarkToFile(fn[, savehist=true]).
+// System bookmarks such as the start anchor pass savehist=false: they are still
+// native files, but they do not mark a player save point.
+bool recordsHistory(tjs_int count, tTJSVariant **params) {
+    return count < 2 || !params[1] || params[1]->Type() == tvtVoid ||
+           params[1]->operator bool();
+}
+
 class GameSaveObserver final : public tTJSDispatch {
     tTJSVariant method_;
+    iTJSDispatch2 *kag_; // Owned by GameSaveWatch, which outlives active calls.
     bool active_ = true;
 
 public:
-    explicit GameSaveObserver(const tTJSVariant &method) : method_(method) {}
+    GameSaveObserver(const tTJSVariant &method, iTJSDispatch2 *kag)
+        : method_(method), kag_(kag) {}
 
     void deactivate(bool abandon_receiver = false) {
         active_ = false;
@@ -221,9 +312,14 @@ public:
         const tTJSVariant method(method_);
         tTJSVariant ignored_result;
         if(!result) result = &ignored_result;
-        GameSaveCall observed(active_);
+        const bool history = recordsHistory(count, params);
+        GameSaveCall observed(active_, history);
+        std::unique_ptr<KagSnapshot> snapshot;
+        if(observed.outermost() && history) snapshot = std::make_unique<KagSnapshot>(kag_);
         const auto status = method.AsObjectClosureNoAddRef().FuncCall(
             flag, name, hint, result, count, params, objthis);
+        if(snapshot && status == TJS_S_OK) snapshot->publish(observed.id());
+        snapshot.reset();
         observed.complete(status, *result);
         return status; // The scope pairs a thrown exception with end(false).
     }
@@ -238,7 +334,7 @@ class GameSaveWatch final {
 public:
     GameSaveWatch(iTJSDispatch2 *kag, const tTJSVariant &method)
         : kag_(retainDispatch(kag)), original_(method),
-          observer_(new GameSaveObserver(method)) {}
+          observer_(new GameSaveObserver(method, kag)) {}
 
     bool matches(iTJSDispatch2 *kag, const tTJSVariant &method) const {
         return kag_.get() == kag && method.Type() == tvtObject &&
@@ -849,9 +945,10 @@ void TVPWebRequestNativeExit(int status) {
 
 // Native serializer writes use the same transaction depth as observed KAG calls.
 // The caller invokes this only after validating an image-backed file prefix.
+// Outside a KAG bookmark call, such a file is the game's own player save slot.
 void *TVPBeginGameSaveObservation() noexcept {
     if(!TVPStartupSuccess || native_exit_requested || game_save_flushing) return nullptr;
-    try { return new GameSaveCall(true); }
+    try { return new GameSaveCall(true, true); }
     catch(...) { return nullptr; }
 }
 
