@@ -20,6 +20,7 @@ typedef unsigned long ULONG_PTR;
 #include "GraphicsLoaderIntf.h"
 #include "EventIntf.h"
 #include "WindowImpl.h"
+extern bool TVPGetScreenSize(tjs_int index, tjs_int &width, tjs_int &height);
 #ifdef __EMSCRIPTEN__
 #include "WebDisplayMonitors.h"
 #include "WebWindowPlacement.h"
@@ -1518,6 +1519,35 @@ NCB_ATTACH_CLASS_WITH_HOOK(PadEx, Pad) {
 struct System {
     static tjs_int getDoubleClickTime() { return -1; }
 
+    static bool setMonitorRect(ncbDictionaryAccessor &info,
+                               const tjs_char *name, const tTVPRect &area) {
+        ncbDictionaryAccessor rect;
+        if(!rect.IsValid())
+            return false;
+        rect.SetValue(TJS_W("x"), area.left);
+        rect.SetValue(TJS_W("y"), area.top);
+        rect.SetValue(TJS_W("w"), area.right - area.left);
+        rect.SetValue(TJS_W("h"), area.bottom - area.top);
+        auto *dispatch = rect.GetDispatch();
+        tTJSVariant value(dispatch, dispatch);
+        info.SetValue(name, value);
+        return true;
+    }
+
+    static bool fillMonitorInfo(void *monitorHandle,
+                                ncbDictionaryAccessor &info) {
+        (void)monitorHandle;
+        info.SetValue(TJS_W("name"), tTJSVariant(TJS_W("default monitor")));
+        info.SetValue(TJS_W("primary"), true);
+        tTVPRect monitor;
+        monitor.left = monitor.top = 0;
+        TVPGetScreenSize(0, monitor.right, monitor.bottom);
+        tTVPRect work = monitor;
+        setMonitorRect(info, TJS_W("monitor"), monitor);
+        setMonitorRect(info, TJS_W("work"), work);
+        return true;
+    }
+
     static tjs_error getDisplayMonitors(tTJSVariant *result, tjs_int numparams,
                                         tTJSVariant **param,
                                         iTJSDispatch2 *objthis) {
@@ -1531,6 +1561,55 @@ struct System {
     static tjs_error getMonitorInfo(tTJSVariant *result, tjs_int numparams,
                                     tTJSVariant **param,
                                     iTJSDispatch2 *objthis) {
+        // Preserve the mobile references' overloads and default-monitor path.
+        // TVPGetScreenSize supplies the platform's logical screen dimensions.
+        switch(numparams) {
+            case 0:
+                break;
+            case 2: {
+                if(param[1]->Type() != tvtObject)
+                    return TJS_E_INVALIDPARAM;
+                auto *window = param[1]->AsObjectNoAddRef();
+                if(!window || !window->IsInstanceOf(0, nullptr, nullptr,
+                                                    TJS_W("Window"), window))
+                    return TJS_E_INVALIDPARAM;
+                WindowEx::GetHWND(window);
+                break;
+            }
+            case 3: {
+                tjs_int x = param[0]->AsInteger();
+                tjs_int y = param[1]->AsInteger();
+                (void)x;
+                (void)y;
+                break;
+            }
+            case 5: {
+                tTVPRect rect;
+                rect.left = param[1]->AsInteger();
+                rect.top = param[2]->AsInteger();
+                rect.right = param[3]->AsInteger();
+                rect.bottom = param[4]->AsInteger();
+                rect.right += rect.left;
+                rect.bottom += rect.top;
+                (void)rect;
+                break;
+            }
+            default:
+                return TJS_E_BADPARAMCOUNT;
+        }
+#ifdef __EMSCRIPTEN__
+        // An unused TJS result can be null. Wasm has no protected null page;
+        // discard the value locally instead of writing through that pointer.
+        tTJSVariant discardedResult;
+        if(!result)
+            result = &discardedResult;
+#endif
+        result->Clear();
+        ncbDictionaryAccessor info;
+        if(info.IsValid() && fillMonitorInfo(nullptr, info)) {
+            auto *dispatch = info.GetDispatch();
+            *result = tTJSVariant(dispatch, dispatch);
+        }
         return TJS_S_OK;
     }
 

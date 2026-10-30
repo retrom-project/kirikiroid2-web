@@ -59,7 +59,7 @@ def main() -> int:
     require("cpp/core/environ/web/HostBookmarkBridge.cpp", (
         "krkr2_host_load_bookmark_is_ready",
         "krkr2_host_cancel_bookmark_load",
-        "krkr2_host_observe_game_saves", "onGameSave",
+        "krkr2_host_observe_game_saves", "onGameSave", "onGameSaveImage",
         "krkr2_host_flush_game_saves", "saveSystemVariables",
         "krkr2_host_finalize_native_exit", "onNativeExitRequested",
         "krkr2_host_bookmark_is_ready", "krkr2_host_save_bookmark",

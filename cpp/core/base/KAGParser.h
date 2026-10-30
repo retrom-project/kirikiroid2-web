@@ -160,6 +160,11 @@ public:
 
     void Invalidate() override;
 
+protected:
+    virtual bool CanRecordInlineScript() const { return false; }
+    virtual bool HasExtendedControlFlow() const { return false; }
+    void InitializeExtendedControlFlow();
+
 private:
     iTJSDispatch2 *Owner; // owner object
 
@@ -168,25 +173,17 @@ private:
     iTJSDispatch2 *DicObj; // DictionaryObject
 
     iTJSDispatch2 *TagListClear; // Array.clear method pointer (for TagList)
-    iTJSDispatch2 *TagListAdd; // Array.add method pointer (for TagList)
-    iTJSDispatch2 *TagList; // ordered list of the current tag's attribute
-                            // names (Array); attached as the "taglist" member
-                            // of DicObj. libkrkr2.so sub_561F3C @0x561F3C keeps
-                            // this array at parser+24, clears it together with
-                            // DicObj and Array.add's each stored member name
+    iTJSDispatch2 *TagList; // ordered attribute names, attached as DicObj.taglist
 
     iTJSDispatch2 *ArrayAssign; // Array.assign method pointer
                                 // libkrkr2.so qword_1AB3C10 (取自 Array class
                                 // "assign")；用于把 names-array 深拷进 MacroArgs
                                 // 元素的 second 字段（sub_569A18/sub_5698BC）
 
-    iTJSDispatch2 *ArrayPush; // Array.push method pointer
-                              // libkrkr2.so qword_1AB27E0 (取自 Array class
-                              // "push")；Store 序列化每个 MacroArgs 槽时一次
-                              // push(key,value) 两元素到扁平 [k,v,k,v...] 数组
-                              // (serializeMacroArg @0x54B1C8)
+    iTJSDispatch2 *ArrayPush; // Array.push for ordered names and flat pairs
 
     iTJSDispatch2 *Macros; // Macro Dictionary Object
+    iTJSDispatch2 *ParamMacros; // parameter name -> ordered [name,value,...] Array
 
     // Macro arguments: libkrkr2.so 把每个宏参数槽存为 {values-dict, names-array}
     // 配对的 16B 元素 vector（parser+56..+80, 元素 +0=first=values-dict,
@@ -197,6 +194,37 @@ private:
     std::vector<std::pair<iTJSDispatch2 *, iTJSDispatch2 *>> MacroArgs;
     tjs_uint MacroArgStackDepth;
     tjs_uint MacroArgStackBase;
+
+    // ExtKAGParser owns a real script Array of local Dictionary objects.
+    // The base instance leaves this Variant void and never uses these states.
+    tTJSVariant LocalVariables;
+    ttstr WhileLevelExp;
+    ttstr WhileLevelEach;
+
+    struct tWhileStackData {
+        ttstr Storage;
+        ttstr Label;
+        tjs_int Offset;
+        ttstr OrgLineStr;
+        ttstr LineBuffer;
+        tjs_int Pos;
+        bool LineBufferUsing;
+        tjs_int ExcludeLevel;
+        tjs_int IfLevel;
+        ttstr WhileLevelExp;
+        ttstr WhileLevelEach;
+
+        tWhileStackData(const ttstr &storage, const ttstr &label,
+                        tjs_int offset, const ttstr &orglinestr,
+                        const ttstr &linebuffer, tjs_int pos,
+                        bool linebufferusing, tjs_int excludelevel,
+                        tjs_int iflevel, const ttstr &exp, const ttstr &each) :
+            Storage(storage), Label(label), Offset(offset),
+            OrgLineStr(orglinestr), LineBuffer(linebuffer), Pos(pos),
+            LineBufferUsing(linebufferusing), ExcludeLevel(excludelevel),
+            IfLevel(iflevel), WhileLevelExp(exp), WhileLevelEach(each) {}
+    };
+    std::vector<tWhileStackData> WhileStack;
 
     struct tCallStackData {
         ttstr Storage; // caller storage
@@ -212,6 +240,8 @@ private:
         std::vector<bool> IfLevelExecutedStack;
         tjs_int ExcludeLevel;
         tjs_int IfLevel;
+        tjs_uint WhileStackDepth;
+        tjs_int LocalVariablesCount;
 
         tCallStackData(const ttstr &storage, const ttstr &label, tjs_int offset,
                        const ttstr &orglinestr, const ttstr &linebuffer,
@@ -220,14 +250,17 @@ private:
                        const std::vector<tjs_int> &excludelevelstack,
                        tjs_int excludelevel,
                        const std::vector<bool> &iflevelexecutedstack,
-                       tjs_int iflevel) :
+                       tjs_int iflevel, tjs_uint whilestackdepth = 0,
+                       tjs_int localvariablescount = 0) :
             Storage(storage), Label(label), Offset(offset),
             OrgLineStr(orglinestr), LineBuffer(linebuffer), Pos(pos),
             LineBufferUsing(linebufferusing),
             MacroArgStackBase(macroargstackbase),
             MacroArgStackDepth(macroargstackdepth),
             ExcludeLevelStack(excludelevelstack), ExcludeLevel(excludelevel),
-            IfLevelExecutedStack(iflevelexecutedstack), IfLevel(iflevel) {}
+            IfLevelExecutedStack(iflevelexecutedstack), IfLevel(iflevel),
+            WhileStackDepth(whilestackdepth),
+            LocalVariablesCount(localvariablescount) {}
     };
 
     std::vector<tCallStackData> CallStack;
@@ -311,8 +344,25 @@ private:
     void FindNearestLabel(tjs_int start, tjs_int &labelline, ttstr &labelname);
 
     void PushCallStack();
+    void PushCallStack(const tTJSVariant &copyvar, iTJSDispatch2 *args);
 
     void PopCallStack(const ttstr &storage, const ttstr &label);
+
+    void PushWhileStack();
+    void PopWhileStack(bool rewind);
+    void WhileStackControlForEndwhile(bool repeat);
+    void ClearWhileStack();
+    void ClearWhileStackToTheLatestCallStack();
+    void CheckWhileStack();
+
+    tjs_int GetLocalVariablesCount() const;
+    void ResetLocalVariables();
+    void PushLocalVariables(const tTJSVariant &copyvar, iTJSDispatch2 *args);
+    void PopLocalVariables();
+    void PopLocalVariablesBeforeTheLatestCallStack();
+    void ApplyLocalArguments(iTJSDispatch2 *args);
+    void StoreExtendedState(iTJSDispatch2 *dic);
+    void RestoreExtendedState(iTJSDispatch2 *dic);
 
     void StoreIntStackToDic(iTJSDispatch2 *dic, std::vector<tjs_int> &stack,
                             const tjs_char *membername);
@@ -333,10 +383,12 @@ public:
 
 private:
     iTJSDispatch2 *_GetNextTag();
-    // taglist accumulator helpers (libkrkr2.so sub_561F3C @0x561F3C)
-    void TagListClearItems(); // clear TagList (qword_1AB3C08 clear)
-    void TagListAddName(const ttstr &name); // Array.add (qword_1AB3C18)
-    void AttachTagList(); // DicObj.taglist = TagList (sub_568F88 @0x568F88)
+    void TagListClearItems();
+    void TagListAddName(const ttstr &name);
+    void AttachTagList();
+    bool ProcessAttribute(bool &condition, tTJSVariant &output,
+                          const ttstr &name, const ttstr &value, bool entity,
+                          bool macroarg);
 
 public:
     iTJSDispatch2 *GetNextTag();
@@ -363,6 +415,8 @@ public:
 
     iTJSDispatch2 *GetMacrosNoAddRef() const { return Macros; }
 
+    iTJSDispatch2 *GetParamMacrosNoAddRef() const { return ParamMacros; }
+
     iTJSDispatch2 *GetMacroTopNoAddRef() const;
     // get current macro argument (parameters)
 
@@ -372,6 +426,7 @@ public:
 };
 
 extern iTJSDispatch2 *TVPCreateNativeClass_KAGParser();
+extern iTJSDispatch2 *TVPCreateNativeClass_ExtKAGParser();
 
 
 #endif

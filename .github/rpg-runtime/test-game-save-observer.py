@@ -11,11 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix="kirikiri-game-save-test-") as directory:
     scratch = Path(directory)
     for name in ("ScriptMgnIntf.h", "base/CCDirector.h", "base/CCScheduler.h", "tjsObject.h",
-                 "tjsCommHead.h", "SysInitIntf.h", "emscripten.h"):
+                 "tjsCommHead.h", "SysInitIntf.h", "emscripten.h", "LayerIntf.h", "LayerBitmapIntf.h"):
         header = scratch / name
         header.parent.mkdir(parents=True, exist_ok=True)
         header.touch()
-    for name in ("host_game_save_observer", "host_game_save_flush"):
+    for name in ("host_game_save_observer", "host_game_save_flush", "host_game_save_snapshot"):
         executable = scratch / name
         subprocess.run([
             os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",

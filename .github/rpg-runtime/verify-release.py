@@ -70,7 +70,7 @@ def main() -> int:
     javascript = paths["index.js"].read_text(encoding="utf-8")
     if any(marker not in javascript for marker in (
         "krkr2_host_load_bookmark_is_ready",
-        "krkr2_host_observe_game_saves", "onGameSave",
+        "krkr2_host_observe_game_saves", "onGameSave", "onGameSaveImage",
         "krkr2_host_flush_game_saves",
         "krkr2_host_finalize_native_exit", "onNativeExitRequested",
         "krkr2StopMainLoop",

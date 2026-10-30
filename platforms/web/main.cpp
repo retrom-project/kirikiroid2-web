@@ -8,12 +8,30 @@
 #include <SDL2/SDL_hints.h>
 
 #include "environ/cocos2d/AppDelegate.h"
+#include "environ/web/HostArguments.h"
 #include "environ/ui/MainFileSelectorForm.h"
 
 extern "C" void krkr2_install_web_audio_resume();
 
+namespace {
+std::vector<std::string> WebCommandLineArguments;
+}
+
+const std::vector<std::string> &TVPGetWebCommandLineArguments() {
+    return WebCommandLineArguments;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_engine_arguments_abi() {
+    return 1;
+}
+
 int main(int argc, char **argv) {
     spdlog::set_level(spdlog::level::debug);
+
+    // Emscripten releases main's argv storage after main returns. The native
+    // engine may only initialize its option stock on a later application tick.
+    if(argc > 1)
+        WebCommandLineArguments.assign(argv + 1, argv + argc);
 
     // Browser autoplay policy has no Android equivalent. Install the Web-only
     // gesture bridge before OpenAL creates its first AudioContext so the bridge

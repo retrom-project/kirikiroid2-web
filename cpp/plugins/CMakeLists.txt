@@ -29,7 +29,7 @@ target_sources(${PROJECT_NAME} PRIVATE ${_PLUGIN_SOURCES})
 # Native reference reconstruction remains independent of this Web extension.
 if(EMSCRIPTEN)
     find_package(unofficial-sqlite3 CONFIG REQUIRED)
-    target_sources(${PROJECT_NAME} PRIVATE sqlite/Sqlite.cpp)
+    target_sources(${PROJECT_NAME} PRIVATE sqlite/Sqlite.cpp steam/SteamWeb.cpp)
     target_link_libraries(${PROJECT_NAME} PRIVATE unofficial::sqlite3::sqlite3)
 endif()
 
@@ -45,6 +45,7 @@ target_include_directories(krkr2_binary_accessor PUBLIC
 target_link_libraries(krkr2_binary_accessor PUBLIC krkr2core)
 
 set(_KRKR2_NCBIND_SOURCES
+    ExtKAGParser.cpp
     xp3filter.cpp
     shrinkCopy.cpp
     layerExBTOA.cpp

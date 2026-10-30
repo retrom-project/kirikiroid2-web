@@ -2,6 +2,7 @@
 // fixture supplies TJS dispatch ownership and the event/JavaScript boundaries.
 #pragma once
 #include <cassert>
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 using tjs_char = wchar_t;
 using tjs_int32 = int;
 using tjs_uint32 = unsigned;
+using tjs_uint = unsigned;
 using tjs_int = int;
 using tjs_error = int;
 using ttstr = std::wstring;
@@ -25,6 +27,25 @@ constexpr int TJS_E_MEMBERNOTFOUND = -1;
 constexpr int TJS_MEMBERENSURE = 0x200;
 constexpr int TJS_IGNOREPROP = 0x100;
 enum { tvtVoid, tvtObject, tvtString, tvtInteger };
+constexpr tjs_uint32 TJS_NIS_GETINSTANCE = 2;
+#define TJS_FAILED(status) ((status) < 0)
+#define TJS_SUCCEEDED(status) ((status) >= 0)
+struct iTJSNativeInstance { virtual ~iTJSNativeInstance() = default; };
+// The 32bpp layer image KAG's snapshotLayer exposes to the bridge.
+struct tTVPBaseTexture {
+    unsigned width = 0, height = 0;
+    bool bpp32 = true;
+    std::vector<unsigned char> pixels;
+    bool Is32BPP() const { return bpp32; }
+    unsigned GetWidth() const { return width; }
+    unsigned GetHeight() const { return height; }
+    const void *GetScanLine(unsigned y) const { return pixels.data() + static_cast<std::size_t>(y) * width * 4; }
+};
+struct tTJSNI_BaseLayer : iTJSNativeInstance {
+    tTVPBaseTexture image;
+    tTVPBaseTexture *GetMainImage() { return &image; }
+};
+struct tTJSNC_Layer { static inline tjs_int32 ClassID = 7; };
 struct iTJSDispatch2;
 void retain(iTJSDispatch2 *);
 void release(iTJSDispatch2 *);
@@ -90,6 +111,12 @@ struct iTJSDispatch2 {
     int callStatus = TJS_S_OK;
     int callResult = 1;
     iTJSDispatch2 *lastReceiver = nullptr;
+    tTJSNI_BaseLayer *nativeLayer = nullptr;
+    tjs_error NativeInstanceSupport(tjs_uint32 flags, tjs_int32 classId, iTJSNativeInstance **result) {
+        if(flags != TJS_NIS_GETINSTANCE || classId != tTJSNC_Layer::ClassID || !nativeLayer) return TJS_E_FAIL;
+        *result = nativeLayer;
+        return TJS_S_OK;
+    }
     std::function<void(tTJSVariant *, int, tTJSVariant **)> onCall;
     std::function<void(const wchar_t *)> onGet;
     int PropGet(int flags, const wchar_t *name, void *, tTJSVariant *result,
@@ -184,11 +211,16 @@ inline void krkr2_host_notify_native_exit(int status) { testNativeExitStatuses.p
 inline int krkr2_host_main_loop_is_idle() {
     return testLoopRegistered && !testLoopPending && !testLoopStopping;
 }
-struct TestGameSaveEvent { int phase; int id; bool success; };
+struct TestGameSaveEvent { int phase; int id; bool success; bool history; };
 std::vector<TestGameSaveEvent> testGameSaveEvents;
 std::function<void(const TestGameSaveEvent &)> testGameSaveCallback;
-inline void krkr2_host_notify_game_save(int phase, int id, int success) {
-    const TestGameSaveEvent event{phase, id, success != 0};
+struct TestGameSaveImage { int id; int width; int height; std::vector<unsigned char> pixels; };
+std::vector<TestGameSaveImage> testGameSaveImages;
+inline void krkr2_host_publish_game_save_image(int id, const unsigned char *pixels, int width, int height) {
+    testGameSaveImages.push_back({id, width, height, {pixels, pixels + width * height * 4}});
+}
+inline void krkr2_host_notify_game_save(int phase, int id, int success, int history) {
+    const TestGameSaveEvent event{phase, id, success != 0, history != 0};
     testGameSaveEvents.push_back(event);
     // EM_JS catches Host callback failures; the original TJS call must survive.
     try { if(testGameSaveCallback) testGameSaveCallback(event); } catch(...) {}

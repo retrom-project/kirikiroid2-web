@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="kirikiri-native-exit-") as directory:
         ], check=True)
         subprocess.run([str(executable)], check=True)
     for name in ("ScriptMgnIntf.h", "base/CCDirector.h", "base/CCScheduler.h", "tjsObject.h",
-                 "tjsCommHead.h", "SysInitIntf.h", "emscripten.h"):
+                 "tjsCommHead.h", "SysInitIntf.h", "emscripten.h", "LayerIntf.h", "LayerBitmapIntf.h"):
         header = scratch / name
         header.parent.mkdir(parents=True, exist_ok=True)
         header.touch()
