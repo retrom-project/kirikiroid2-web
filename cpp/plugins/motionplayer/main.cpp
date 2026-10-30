@@ -284,7 +284,8 @@ NCB_REGISTER_SUBCLASS(Player) {
     // are ignored.
     NCB_CONSTRUCTOR((tTJSVariant));
 
-    // Four-reference invariant: exactly 92 members in this publication order.
+    // The 92 four-reference members retain their publication order. A Windows
+    // plugin version's additional property spelling is appended below.
     // Only setVariable/play/progress use native-instance raw callbacks. Clear
     // and draw use generated typed descriptors with explicit signatures, and
     // every other method/property uses the ordinary typed ncbind family.
@@ -396,6 +397,10 @@ NCB_REGISTER_SUBCLASS(Player) {
     // The native registrar owns this one-time 4x4 identity-grid population and
     // the ARM+NEON evaluator promotion after the Player member table is built.
     internal::initializeBezierPatchRuntime_guess();
+
+    // Windows MotionPlayer also publishes this spelling as a read-only name
+    // list. Keep the four mobile references' getter/container implementation.
+    NCB_PROPERTY_RO(varibleKeys, getVariableKeys);
 }
 
 // Motion.EmotePlayer — full NCB surface (70 members + 2 constants). Registration
