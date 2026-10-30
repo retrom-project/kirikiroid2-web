@@ -65,6 +65,9 @@ int main() {
     assert(testGameSaveImages.size() == 1 && unlock.calls == 1);
     lock.callException = 0;
 
+    // Release the watch while the stack-owned KAG object is still alive.
+    krkr2_host_cancel_bookmark_load();
+    assert(kag.properties.at(L"saveBookMarkToFile").AsObjectNoAddRef() == &native);
     kag.properties.clear();
     global.properties.clear();
 }
