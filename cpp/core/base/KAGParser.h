@@ -149,6 +149,14 @@ public:
 //---------------------------------------------------------------------------
 // tTJSNI_KAGParser
 //---------------------------------------------------------------------------
+struct tTVPKAGParserMethodCache {
+    iTJSDispatch2 *DicClear;
+    iTJSDispatch2 *DicAssign;
+    iTJSDispatch2 *ArrayClear;
+    iTJSDispatch2 *ArrayAssign;
+    iTJSDispatch2 *ArrayPush;
+};
+
 class tTJSNI_KAGParser : public tTJSNativeInstance {
     typedef tTJSNativeInstance inherited;
 
@@ -161,36 +169,32 @@ public:
     void Invalidate() override;
 
 protected:
+    explicit tTJSNI_KAGParser(const tTVPKAGParserMethodCache *methods);
+    virtual bool ReturnsTagList() const { return false; }
     virtual bool CanRecordInlineScript() const { return false; }
     virtual bool HasExtendedControlFlow() const { return false; }
     void InitializeExtendedControlFlow();
 
 private:
     iTJSDispatch2 *Owner; // owner object
+    bool OwnsMethods; // Exb borrows its module's cached dispatch pointers.
 
     iTJSDispatch2 *DicClear; // Dictionary.Clear method pointer
     iTJSDispatch2 *DicAssign; // Dictionary
     iTJSDispatch2 *DicObj; // DictionaryObject
 
     iTJSDispatch2 *TagListClear; // Array.clear method pointer (for TagList)
-    iTJSDispatch2 *TagList; // ordered attribute names, attached as DicObj.taglist
+    iTJSDispatch2 *TagList; // ordered names, exposed only by Ex / Exb parsers
 
-    iTJSDispatch2 *ArrayAssign; // Array.assign method pointer
-                                // libkrkr2.so qword_1AB3C10 (取自 Array class
-                                // "assign")；用于把 names-array 深拷进 MacroArgs
-                                // 元素的 second 字段（sub_569A18/sub_5698BC）
+    iTJSDispatch2 *ArrayAssign; // Copies ordered names into macro arguments.
 
     iTJSDispatch2 *ArrayPush; // Array.push for ordered names and flat pairs
 
     iTJSDispatch2 *Macros; // Macro Dictionary Object
     iTJSDispatch2 *ParamMacros; // parameter name -> ordered [name,value,...] Array
 
-    // Macro arguments: libkrkr2.so 把每个宏参数槽存为 {values-dict, names-array}
-    // 配对的 16B 元素 vector（parser+56..+80, 元素 +0=first=values-dict,
-    // +8=second=names-array）。first 是宏实参字典，second 是按源码顺序记录的属性
-    // 名 Array（与 DicObj/TagList 并行）。sub_569A18/sub_5698BC 构造，
-    // GetMacroTopNoAddRef 返回 .first，'*' 转发分支按 .second 的 PropGetByNum
-    // 有序枚举。详见 analysis 与 sub_561F3C @0x5666c0/@0x564080。
+    // Each macro argument keeps its values dictionary paired with an ordered
+    // Array of attribute names. Forwarding '*' enumerates that names Array.
     std::vector<std::pair<iTJSDispatch2 *, iTJSDispatch2 *>> MacroArgs;
     tjs_uint MacroArgStackDepth;
     tjs_uint MacroArgStackBase;
@@ -329,8 +333,7 @@ public:
 private:
     bool SkipCommentOrLabel(); // skip comment or label and go to next line
 
-    // libkrkr2.so 的 push 源是 {DicObj@+16, TagList@+24}：values=DicObj、
-    // names=TagList。深拷 values→新元素 .first、names→.second。
+    // Deep-copy both the values dictionary and its ordered attribute names.
     void PushMacroArgs(iTJSDispatch2 *values, iTJSDispatch2 *names);
 
 public:
@@ -426,6 +429,9 @@ public:
 };
 
 extern iTJSDispatch2 *TVPCreateNativeClass_KAGParser();
+extern iTJSDispatch2 *TVPCreateNativeClass_KAGParserEx();
+extern iTJSDispatch2 *TVPCreateNativeClass_KAGParserExb();
+extern const tTVPKAGParserMethodCache &TVPGetKAGParserExbMethodCache();
 extern iTJSDispatch2 *TVPCreateNativeClass_ExtKAGParser();
 
 
