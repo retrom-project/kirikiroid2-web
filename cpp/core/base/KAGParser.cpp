@@ -502,8 +502,11 @@ tTVPScenarioCacheItem *TVPGetScenario(const ttstr &storagename, bool isstring) {
 // tTJSNI_KAGParser : KAGParser TJS native instance
 //---------------------------------------------------------------------------
 // KAGParser is implemented as a TJS native class/object
-tTJSNI_KAGParser::tTJSNI_KAGParser() {
+tTJSNI_KAGParser::tTJSNI_KAGParser() : tTJSNI_KAGParser(nullptr) {}
+
+tTJSNI_KAGParser::tTJSNI_KAGParser(const tTVPKAGParserMethodCache *methods) {
     Owner = nullptr;
+    OwnsMethods = methods == nullptr;
     Scenario = nullptr;
     Lines = nullptr;
     CurLineStr = nullptr;
@@ -524,14 +527,22 @@ tTJSNI_KAGParser::tTJSNI_KAGParser() {
     MacroArgStackDepth = 0;
     MacroArgStackBase = 0;
 
-    // retrieve DictClear method and DictObj object
-    iTJSDispatch2 *dictclass;
-    DicObj = TJSCreateDictionaryObject(&dictclass);
+    iTJSDispatch2 *dictclass = nullptr;
+    DicObj = TJSCreateDictionaryObject(methods ? nullptr : &dictclass);
     Macros = TJSCreateDictionaryObject();
     ParamMacros = TJSCreateDictionaryObject();
-    // taglist accumulator array (libkrkr2.so sub_561F3C keeps it at parser+24)
-    iTJSDispatch2 *arrayclass;
-    TagList = TJSCreateArrayObject(&arrayclass);
+    // Keep the current tag's attribute names in a private ordered Array.
+    iTJSDispatch2 *arrayclass = nullptr;
+    TagList = TJSCreateArrayObject(methods ? nullptr : &arrayclass);
+    if(methods) {
+        // Exb acquired these references once at module registration.
+        DicClear = methods->DicClear;
+        DicAssign = methods->DicAssign;
+        TagListClear = methods->ArrayClear;
+        ArrayAssign = methods->ArrayAssign;
+        ArrayPush = methods->ArrayPush;
+        return;
+    }
     try {
         // retrieve clear method from dictclass
         tTJSVariant val;
@@ -553,9 +564,7 @@ tTJSNI_KAGParser::tTJSNI_KAGParser() {
             TVPThrowInternalError;
         TagListClear = val.AsObject();
 
-        // retrieve Array.assign method (libkrkr2.so qword_1AB3C10, sub_55A618):
-        // used to deep-copy the names-array into each MacroArgs element's
-        // second field (sub_569A18/sub_5698BC末参 clear=1)
+        // Array.assign deep-copies the ordered names in macro arguments.
         er = arrayclass->PropGet(0, TJS_W("assign"), nullptr, &val, arrayclass);
         if(TJS_FAILED(er))
             TVPThrowInternalError;
@@ -823,18 +832,22 @@ void tTJSNI_KAGParser::Invalidate() {
     // invalidate this object
 
     // release objects
-    if(DicAssign)
-        DicAssign->Release();
-    if(DicClear)
-        DicClear->Release();
+    if(OwnsMethods) {
+        if(DicAssign)
+            DicAssign->Release();
+        if(DicClear)
+            DicClear->Release();
+    }
     if(DicObj)
         DicObj->Release();
-    if(TagListClear)
-        TagListClear->Release();
-    if(ArrayAssign)
-        ArrayAssign->Release();
-    if(ArrayPush)
-        ArrayPush->Release();
+    if(OwnsMethods) {
+        if(TagListClear)
+            TagListClear->Release();
+        if(ArrayAssign)
+            ArrayAssign->Release();
+        if(ArrayPush)
+            ArrayPush->Release();
+    }
     if(TagList)
         TagList->Release();
     if(Macros)
@@ -2207,6 +2220,11 @@ void tTJSNI_KAGParser::TagListAddName(const ttstr &name) {
 }
 
 void tTJSNI_KAGParser::AttachTagList() {
+    // taglist is part of the Ex / Exb return contract. Base and Ext parsers
+    // return the tag dictionary without this extra enumerable member.
+    if(!ReturnsTagList())
+        return;
+
     static ttstr __taglist_name(TJSMapGlobalStringMap(TJS_W("taglist")));
     tTJSVariant tlval(TagList, TagList);
     DicObj->PropSetByVS(TJS_MEMBERENSURE,
@@ -2652,7 +2670,7 @@ parse_start:
                     TVP_KAG_STEP_NEXT;
 
                     if(condition && ExcludeLevel == -1) {
-                        AttachTagList(); // sub_568F88: DicObj.taglist = TagList
+                        AttachTagList();
                         DicObj->AddRef();
                         TVPKAGTraceTag("kag.tag.return", this, StorageName,
                                        CurLabel, CurLine, CurPos, TagLine,
@@ -3333,6 +3351,28 @@ static iTJSNativeInstance *Create_NI_KAGParser() {
 }
 
 namespace {
+    class tTJSNI_KAGParserEx : public tTJSNI_KAGParser {
+    protected:
+        bool ReturnsTagList() const override { return true; }
+    };
+
+    class tTJSNI_KAGParserExb : public tTJSNI_KAGParser {
+    public:
+        tTJSNI_KAGParserExb() :
+            tTJSNI_KAGParser(&TVPGetKAGParserExbMethodCache()) {}
+
+    protected:
+        bool ReturnsTagList() const override { return true; }
+    };
+
+    iTJSNativeInstance *Create_NI_KAGParserEx() {
+        return new tTJSNI_KAGParserEx();
+    }
+
+    iTJSNativeInstance *Create_NI_KAGParserExb() {
+        return new tTJSNI_KAGParserExb();
+    }
+
     // ExtKAGParser has its own instance factory.  Sharing the existing parser
     // implementation does not alter instances created from the base class.
     class tTJSNI_ExtKAGParser : public tTJSNI_KAGParser {
@@ -3722,6 +3762,14 @@ return classobj;
 //---------------------------------------------------------------------------
 iTJSDispatch2 *TVPCreateNativeClass_KAGParser() {
     return TVPCreateKAGParserClass(Create_NI_KAGParser);
+}
+
+iTJSDispatch2 *TVPCreateNativeClass_KAGParserEx() {
+    return TVPCreateKAGParserClass(Create_NI_KAGParserEx);
+}
+
+iTJSDispatch2 *TVPCreateNativeClass_KAGParserExb() {
+    return TVPCreateKAGParserClass(Create_NI_KAGParserExb);
 }
 
 iTJSDispatch2 *TVPCreateNativeClass_ExtKAGParser() {
