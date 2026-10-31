@@ -38,12 +38,16 @@ tTVPThread::tTVPThread(bool suspended) {
     Terminated = false;
     Suspended = suspended;
 
-    try {
-        Handle = std::thread([this] { StartProc(this); });
-        Handle.detach();
-    } catch(const std::system_error &) {
+    // Default (joinable) attributes: WaitFor joins before owners release the
+    // objects this thread uses.
+    pthread_attr_t attr;
+    if(pthread_attr_init(&attr))
+        TVPThrowInternalError;
+    if(pthread_create(&Handle, &attr, StartProc, this)) {
+        pthread_attr_destroy(&attr);
         TVPThrowInternalError;
     }
+    pthread_attr_destroy(&attr);
 }
 
 //---------------------------------------------------------------------------
@@ -54,9 +58,12 @@ tTVPThread::~tTVPThread() {
 //---------------------------------------------------------------------------
 void *tTVPThread::StartProc(void *arg) {
     auto *_this = (tTVPThread *)arg;
-    if(_this->Suspended) {
+    {
+        // Intentional deviation: the reference tests Suspended outside the
+        // lock and waits without a predicate, so a Resume() landing between
+        // the test and the wait is lost and WaitFor() joins forever.
         std::unique_lock lk(_this->_mutex);
-        _this->_cond.wait(lk);
+        _this->_cond.wait(lk, [_this] { return !_this->Suspended; });
     }
     _this->Execute();
     TVPOnThreadExited();
@@ -65,9 +72,8 @@ void *tTVPThread::StartProc(void *arg) {
 
 //---------------------------------------------------------------------------
 void tTVPThread::WaitFor() {
-    if(Handle.joinable()) {
-        Handle.join();
-    }
+    void *result;
+    pthread_join(Handle, &result);
 }
 
 //---------------------------------------------------------------------------
@@ -88,7 +94,10 @@ void tTVPThread::SetPriority(tTVPThreadPriority pri) {
 // }
 //---------------------------------------------------------------------------
 void tTVPThread::Resume() {
-    Suspended = false;
+    {
+        std::lock_guard lk(_mutex);
+        Suspended = false;
+    }
     _cond.notify_one();
     // while((tjs_int32)ResumeThread(Handle) > 1) ;
 }

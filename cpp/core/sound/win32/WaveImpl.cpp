@@ -1983,7 +1983,9 @@ tTVPWaveSoundBufferDecodeThread::~tTVPWaveSoundBufferDecodeThread() {
     Running = false;
     Terminate();
     Resume();
-    // Event.Set();
+    // Wake Execute's Event.WaitFor(0) so the join below can complete before
+    // the event and one-loop lock are destroyed.
+    Event.Set();
     WaitFor();
 }
 //---------------------------------------------------------------------------
@@ -2000,29 +2002,33 @@ void tTVPWaveSoundBufferDecodeThread::Execute() {
             if(Running) {
                 volatile tTJSCriticalSectionHolder cs_holder(OneLoopCS);
 #ifdef __EMSCRIPTEN__
-                // Android Execute@0x970154 invokes FillL2Buffer synchronously.
+                // Android Execute@0x96FA54 invokes FillL2Buffer synchronously.
                 // Web keeps the same one-loop exclusion/lifetime but waits for
                 // the native audio continuation, never for a JavaScript/VLFS
                 // Promise on this decoder pthread.
-                std::mutex completionMutex;
-                std::condition_variable completionCondition;
-                bool completed = false;
-                bool filled = false;
+                // The completion runs on another thread and may still be
+                // inside notify after this waiter observes `completed`; keep
+                // the wait state shared so it never outlives this frame.
+                struct tCompletion {
+                    std::mutex Mutex;
+                    std::condition_variable Condition;
+                    bool Completed = false;
+                    bool Filled = false;
+                };
+                auto completion = std::make_shared<tCompletion>();
                 Owner->FillL2BufferAsync(
-                    false, true, [&](bool value) {
-                        {
-                            std::lock_guard<std::mutex> lock(completionMutex);
-                            filled = value;
-                            completed = true;
-                        }
-                        completionCondition.notify_one();
+                    false, true, [completion](bool value) {
+                        std::lock_guard<std::mutex> lock(completion->Mutex);
+                        completion->Filled = value;
+                        completion->Completed = true;
+                        completion->Condition.notify_one();
                     });
                 {
-                    std::unique_lock<std::mutex> lock(completionMutex);
-                    completionCondition.wait(lock,
-                                             [&] { return completed; });
+                    std::unique_lock<std::mutex> lock(completion->Mutex);
+                    completion->Condition.wait(
+                        lock, [&] { return completion->Completed; });
                 }
-                wait = !filled;
+                wait = !completion->Filled;
 #else
                 wait = !Owner->FillL2Buffer(false, true); // fill
 #endif
