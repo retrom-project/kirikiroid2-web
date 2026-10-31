@@ -951,6 +951,286 @@ tTJSHashTable<ttstr, ttstr, tTJSHashFunc<ttstr>, TVP_AUTO_PATH_HASH_SIZE>
     TVPAutoPathTable;
 bool AutoPathTableInit = false;
 
+#ifdef __EMSCRIPTEN__
+// This media is the frontend for normalized RHx4 containers, not a Windows
+// CompoundStorageMedia implementation. Native storage paths retain their flow.
+class tTVPWebHashStorageMedia final : public iTVPStorageMedia {
+    struct tMounted {
+        tTJSRefHolder<tTVPArchive> Archive;
+        explicit tMounted(tTVPArchive *archive) : Archive(archive) {}
+        tTVPXP3Archive *Get() const {
+            return static_cast<tTVPXP3Archive *>(Archive.GetObjectNoAddRef());
+        }
+    };
+    struct tAlias { size_t Domain; ttstr Directory; };
+
+    tjs_uint RefCount = 1;
+    std::vector<tMounted> Domains;
+    std::map<ttstr, size_t> DomainByArchive;
+    std::vector<tAlias> Aliases;
+
+    static constexpr size_t NoDomain = size_t(-1);
+
+    static bool Split(const ttstr &name, ttstr &domain, ttstr &path) {
+        const auto *slash = TJS_strchr(name.c_str(), TJS_W('/'));
+        if(!slash) return false;
+        domain = ttstr(name.c_str(), size_t(slash - name.c_str()));
+        path = ttstr(slash + 1);
+        tTVPArchive::NormalizeInArchiveStorageName(path);
+        return true;
+    }
+
+    size_t DomainIndex(const ttstr &domain) const {
+        if(domain == TJS_W(".")) return 0;
+        if(domain.IsEmpty() || (domain.GetLen() > 1 && domain[0] == TJS_W('0')))
+            return NoDomain;
+        size_t value = 0;
+        for(tjs_int i = 0; i < domain.GetLen(); ++i) {
+            if(domain[i] < TJS_W('0') || domain[i] > TJS_W('9')) return NoDomain;
+            const auto digit = size_t(domain[i] - TJS_W('0'));
+            if(value > Domains.size() / 10) return NoDomain;
+            value = value * 10 + digit;
+            if(value >= Domains.size()) return NoDomain;
+        }
+        return value;
+    }
+
+    size_t Mount(const ttstr &name) {
+        const auto known = DomainByArchive.find(name);
+        if(known != DomainByArchive.end()) return known->second;
+        if(!TVPIsExistentStorageNoSearchNoNormalize(name)) return NoDomain;
+        if(!TVPIsXP3Archive(name)) {
+            DomainByArchive.emplace(name, NoDomain);
+            return NoDomain;
+        }
+        tTVPArchive *archive = TVPArchiveCache.Get(name);
+        try {
+            auto *xp3 = dynamic_cast<tTVPXP3Archive *>(archive);
+            if(!xp3 || !xp3->HashNamespace.IsLoaded()) {
+                // The original target parser recognizes Hxv4, not ordinary
+                // File chunks. An existing unmatched archive is consumed by
+                // the bootstrap callback with an empty-domain binding.
+                DomainByArchive.emplace(name, NoDomain);
+                archive->Release();
+                return NoDomain;
+            }
+            if(xp3->HashNamespace.GetMediaName() !=
+               Domains[0].Get()->HashNamespace.GetMediaName())
+                throw std::runtime_error("Incompatible RHx4 hash namespace media");
+            const auto index = Domains.size();
+            Domains.emplace_back(archive);
+            DomainByArchive.emplace(name, index);
+            archive->Release();
+            return index;
+        } catch(...) {
+            archive->Release();
+            throw;
+        }
+    }
+
+    static void LowerAscii(ttstr &name) {
+        auto *p = name.Independ();
+        for(; *p; ++p) {
+            if(*p >= TJS_W('A') && *p <= TJS_W('Z')) *p += TJS_W('a') - TJS_W('A');
+        }
+    }
+
+    static ttstr SourceDirectory(ttstr name) {
+        if(name.IsEmpty()) return {};
+        LowerAscii(name);
+        const auto full = TVPNormalizeStorageName(name + TJS_W("/"));
+        const auto base = TVPNormalizeStorageName(TJS_W("./"));
+        // The supplied bootstrap uses getFullPath(dir + "/").substr(base.length).
+        if(full.GetLen() < base.GetLen()) return {};
+        return ttstr(full.c_str() + base.GetLen());
+    }
+
+    ttstr Placed(size_t domain, const ttstr &directory, const ttstr &basename) const {
+        auto *archive = Domains[domain].Get();
+        ttstr physical;
+        if(!archive->HashNamespace.Resolve(directory, basename, physical)) return {};
+        return archive->ArchiveName + ttstr(TVPArchiveDelimiter) + physical;
+    }
+
+    ttstr Resolve(const ttstr &name) {
+        ttstr domain, path;
+        if(!Split(name, domain, path) || path.IsEmpty() || path.GetLastChar() == TJS_W('/'))
+            return {};
+        const auto index = DomainIndex(domain);
+        if(index == NoDomain) return {};
+        const auto directory = TVPExtractStoragePath(path);
+        const auto basename = TVPExtractStorageName(path);
+        // assignFiles maps the specified source directory to the root only.
+        // Later pairs override initial-root entries; other directories persist.
+        if(domain == TJS_W(".") && directory.IsEmpty()) {
+            for(auto i = Aliases.rbegin(); i != Aliases.rend(); ++i) {
+                const auto found = Placed(i->Domain, i->Directory, basename);
+                if(!found.IsEmpty()) return found;
+            }
+        }
+        return Placed(index, directory, basename);
+    }
+
+public:
+    explicit tTVPWebHashStorageMedia(tTVPXP3Archive *initial) {
+        Domains.emplace_back(initial);
+        DomainByArchive.emplace(initial->ArchiveName, 0);
+    }
+
+    bool HandleAutoPath(const ttstr &name, bool adding) {
+        ttstr archiveName, directory;
+        const auto *colon = TJS_strchr(name.c_str(), TJS_W(':'));
+        if(colon && colon[1] == TJS_W('/') && colon[2] == TJS_W('/')) {
+            const auto *sharp = TJS_strchr(colon + 3, TVPArchiveDelimiter);
+            if(!sharp) return false; // Fully qualified loose directory: native fallback.
+            archiveName = ttstr(name.c_str(), size_t(sharp - name.c_str()));
+            directory = ttstr(sharp + 1);
+            LowerAscii(archiveName);
+            archiveName = TVPNormalizeStorageName(archiveName);
+            if(!TVPIsExistentStorageNoSearchNoNormalize(archiveName)) return false;
+        } else {
+            if(TJS_strchr(name.c_str(), TVPArchiveDelimiter)) return false;
+            // An unqualified directory is passed as source=">" to the native
+            // bootstrap callback, which selects the initial archive domain.
+            archiveName = Domains[0].Get()->ArchiveName;
+            directory = name;
+        }
+        const auto known = DomainByArchive.find(archiveName);
+        if(!adding && known == DomainByArchive.end()) return true;
+        const auto domain = Mount(archiveName);
+        if(domain == NoDomain) return true; // Empty-domain success consumes ordinary XP3.
+        directory = SourceDirectory(directory);
+        const auto directoryHash = Domains[domain].Get()->HashNamespace.PathHash(directory);
+        auto same = [&](const tAlias &alias) {
+            return alias.Domain == domain &&
+                Domains[domain].Get()->HashNamespace.PathHash(alias.Directory) == directoryHash;
+        };
+        if(adding) {
+            if(std::none_of(Aliases.begin(), Aliases.end(), same))
+                Aliases.push_back({domain, directory});
+        } else {
+            Aliases.erase(std::remove_if(Aliases.begin(), Aliases.end(), same), Aliases.end());
+        }
+        return true;
+    }
+
+    ttstr ResolveFullName(const ttstr &name) {
+        if(!name.StartsWith(TJS_W("arc://"))) return {};
+        return Resolve(ttstr(name.c_str() + 6));
+    }
+
+    void AddRef() override { ++RefCount; }
+    void Release() override { if(--RefCount == 0) delete this; }
+    void GetName(ttstr &name) override { name = TJS_W("arc"); }
+    void NormalizeDomainName(ttstr &name) override {
+        tTVPArchive::NormalizeInArchiveStorageName(name);
+    }
+    void NormalizePathName(ttstr &name) override {
+        tTVPArchive::NormalizeInArchiveStorageName(name);
+        name = TJS_W("/") + name;
+    }
+    bool CheckExistentStorage(const ttstr &name) override {
+        return !Resolve(name).IsEmpty();
+    }
+    tTJSBinaryStream *Open(const ttstr &name, tjs_uint32 flags) override {
+        if((flags & TJS_BS_ACCESS_MASK) != TJS_BS_READ)
+            throw std::runtime_error("RHx4 storage is read-only");
+        const auto placed = Resolve(name);
+        if(placed.IsEmpty()) TVPThrowExceptionMessage(TVPCannotFindStorage, name);
+        return TVPCreateStream(placed, flags);
+    }
+    void GetListAt(const ttstr &name, iTVPStorageLister *lister) override {
+        ttstr domain, directory;
+        if(!Split(name, domain, directory)) return;
+        const auto index = DomainIndex(domain);
+        if(index == NoDomain) return;
+        if(!directory.IsEmpty() && directory.GetLastChar() != TJS_W('/')) return;
+        std::map<tTVPWebHxv4Namespace::tFileHash, ttstr> visible;
+        auto append = [&](size_t source, const ttstr &path) {
+            auto *archive = Domains[source].Get();
+            for(const auto &file : archive->HashNamespace.List(path))
+                visible[file.first] = archive->ArchiveName +
+                    ttstr(TVPArchiveDelimiter) + file.second;
+        };
+        append(index, directory);
+        if(domain == TJS_W(".") && directory.IsEmpty()) {
+            for(const auto &alias : Aliases) append(alias.Domain, alias.Directory);
+        }
+        // No plaintext filenames/directories can be recovered from these hashes.
+        // Enumerate actual resolvable resources, rather than guessed names.
+        for(const auto &file : visible) lister->Add(file.second);
+    }
+    void GetLocallyAccessibleName(ttstr &name) override { name.Clear(); }
+};
+
+// Non-owning: TVPStorageMediaManager owns its registered reference.
+static tTVPWebHashStorageMedia *TVPWebHashStorage = nullptr;
+
+bool TVPInitializeWebHashStorage(const ttstr &projectDirectory) {
+    tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
+    if(TVPWebHashStorage) {
+        auto *previous = TVPWebHashStorage;
+        TVPWebHashStorage = nullptr;
+        TVPUnregisterStorageMedia(previous);
+    }
+    const auto *sharp = TJS_strchr(projectDirectory.c_str(), TVPArchiveDelimiter);
+    if(!sharp || sharp[1]) return false;
+    const ttstr name(projectDirectory.c_str(), size_t(sharp - projectDirectory.c_str()));
+    tTVPArchive *archive = TVPArchiveCache.Get(name);
+    try {
+        auto *xp3 = dynamic_cast<tTVPXP3Archive *>(archive);
+        if(!xp3 || !xp3->HashNamespace.IsLoaded()) {
+            archive->Release();
+            return false;
+        }
+        auto *media = new tTVPWebHashStorageMedia(xp3);
+        try {
+            TVPRegisterStorageMedia(media);
+        } catch(...) {
+            media->Release();
+            throw;
+        }
+        TVPWebHashStorage = media;
+        media->Release();
+        archive->Release();
+    } catch(...) {
+        archive->Release();
+        throw;
+    }
+    TVPSetCurrentDirectory(TJS_W("arc://./"));
+    TVPAddLog(TJS_W("(info) Mounted normalized hash namespace at arc://./"));
+    return true;
+}
+
+static ttstr TVPWebResolveHashStorage(const ttstr &name) {
+    if(TVPWebHashStorage && name.StartsWith(TJS_W("arc://")))
+        return TVPWebHashStorage->ResolveFullName(name);
+    const auto *sharp = TJS_strchr(name.c_str(), TVPArchiveDelimiter);
+    if(!sharp) return {};
+    const ttstr archiveName(name.c_str(), size_t(sharp - name.c_str()));
+    tTVPArchive *archive = TVPArchiveCache.Get(archiveName);
+    ttstr result;
+    try {
+        auto *xp3 = dynamic_cast<tTVPXP3Archive *>(archive);
+        if(xp3 && xp3->HashNamespace.IsLoaded()) {
+            const ttstr member(sharp + 1);
+            ttstr physical;
+            // Explicit archive URLs retain an existing physical member's
+            // identity, including literal bootstrap/notice entries.
+            if(!archive->IsExistent(member) &&
+               xp3->HashNamespace.Resolve(TVPExtractStoragePath(member),
+                                          TVPExtractStorageName(member), physical))
+                result = archive->ArchiveName + ttstr(TVPArchiveDelimiter) + physical;
+        }
+    } catch(...) {
+        archive->Release();
+        throw;
+    }
+    archive->Release();
+    return result;
+}
+#endif
+
 //---------------------------------------------------------------------------
 static void TVPClearAutoPathCache() {
     TVPAutoPathCache.Clear();
@@ -976,6 +1256,13 @@ static bool TVPClearAutoPathCacheCallbackInit = false;
 void TVPAddAutoPath(const ttstr &name) {
     tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
 
+#ifdef __EMSCRIPTEN__
+    if(TVPWebHashStorage && TVPWebHashStorage->HandleAutoPath(name, true)) {
+        TVPClearAutoPathCache();
+        return;
+    }
+#endif
+
     tjs_char lastchar = name.GetLastChar();
     if(lastchar != TVPArchiveDelimiter && lastchar != TJS_W('/') &&
        lastchar != TJS_W('\\'))
@@ -996,6 +1283,13 @@ void TVPAddAutoPath(const ttstr &name) {
 //---------------------------------------------------------------------------
 void TVPRemoveAutoPath(const ttstr &name) {
     tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
+
+#ifdef __EMSCRIPTEN__
+    if(TVPWebHashStorage && TVPWebHashStorage->HandleAutoPath(name, false)) {
+        TVPClearAutoPathCache();
+        return;
+    }
+#endif
 
     tjs_char lastchar = name.GetLastChar();
     if(lastchar != TVPArchiveDelimiter && lastchar != TJS_W('/') &&
@@ -1167,6 +1461,16 @@ ttstr TVPGetPlacedPath(const ttstr &name) {
     tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
 
     ttstr normalized(TVPNormalizeStorageName(name));
+
+#ifdef __EMSCRIPTEN__
+    if(TVPWebHashStorage) {
+        const auto hashPlaced = TVPWebResolveHashStorage(normalized);
+        if(!hashPlaced.IsEmpty()) {
+            TVPAutoPathCache.Add(name, hashPlaced);
+            return hashPlaced;
+        }
+    }
+#endif
 
     bool found = TVPIsExistentStorageNoSearchNoNormalize(normalized);
     if(found) {

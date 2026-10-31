@@ -9,6 +9,33 @@ output=$(cd "$output" && pwd)
 toolchain_root=${KIRIKIRI_RUNTIME_TOOLCHAIN_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/kirikiroid2-runtime}
 emsdk_root=${EMSDK:-$toolchain_root/emsdk-$KIRIKIRI_EMSDK_VERSION}
 vcpkg_root=${VCPKG_ROOT:-$toolchain_root/vcpkg-${KIRIKIRI_VCPKG_COMMIT:0:12}}
+case ${KIRIKIRI_WEB_BUILD:-release} in
+  release)
+    configure_args=(--preset "Web Release Config")
+    build_directory="$root/out/web/release"
+    ;;
+  asan)
+    # Keep diagnostics in the normal candidate/asset validation path. Optimize
+    # instrumented code to fit the same bounded browser asset loader. Keep
+    # symbol maps local; ASan source maps would add a required runtime fetch
+    # outside the declared core assets.
+    configure_args=(--preset "Web Debug Asan Config"
+      -DCMAKE_C_FLAGS_DEBUG="-O1 -gline-tables-only"
+      -DCMAKE_CXX_FLAGS_DEBUG="-O1 -gline-tables-only"
+      -DKRKR2_USE_STUB_SPDLOG=ON -DKRKR2_WEB_ENABLE_SOURCE_MAP=OFF)
+    build_directory="$root/out/web/debug-asan"
+    ;;
+  asan-release)
+    # Optimized Release code with recoverable ASan reports (diagnostic only).
+    configure_args=(--preset "Web Release Config" -B "$root/out/web/release-asan"
+      -DKRKR2_WEB_RELEASE_ASAN=ON -DKRKR2_WEB_ENABLE_SOURCE_MAP=OFF)
+    build_directory="$root/out/web/release-asan"
+    ;;
+  *)
+    echo "KIRIKIRI_WEB_BUILD_INVALID" >&2
+    exit 1
+    ;;
+esac
 
 phase() {
   local name=$1 started=$SECONDS
@@ -63,14 +90,14 @@ prepare_ports() {
 }
 
 configure_web() {
-  (cd "$root" && cmake --preset "Web Release Config")
+  (cd "$root" && cmake "${configure_args[@]}")
 }
 
 phase "Emscripten ports" prepare_ports
 phase "Configure and vcpkg dependencies" configure_web
-phase "Core compile and link" cmake --build "$root/out/web/release" --parallel "${KIRIKIRI_BUILD_JOBS:-2}"
+phase "Core compile and link" cmake --build "$build_directory" --parallel "${KIRIKIRI_BUILD_JOBS:-2}"
 
 for asset in index.js index.wasm vlfs.js assets.zip; do
-  install -m 0644 "$root/out/web/release/$asset" "$output/$asset"
+  install -m 0644 "$build_directory/$asset" "$output/$asset"
 done
 install -m 0644 "$root/LICENSE" "$output/LICENSE"

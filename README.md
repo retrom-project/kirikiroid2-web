@@ -55,6 +55,14 @@ cmake --preset "Web Release Config"
 cmake --build out/web/release
 ```
 
+The runtime candidate wrapper also supports an explicit AddressSanitizer build:
+`KIRIKIRI_WEB_BUILD=asan .github/rpg-runtime/build-candidate.sh <empty-absolute-output-directory>`.
+It uses `out/web/debug-asan`, keeps the normal asset size and bridge validation,
+and leaves its symbol map in that build directory for local diagnosis. Source
+maps remain disabled because ASan otherwise requires them as runtime assets.
+Prebuilt vcpkg libraries are not instrumented. Omit `KIRIKIRI_WEB_BUILD` for the
+normal Release candidate; sanitizer builds are diagnostic artifacts.
+
 ### Output Files
 
 ```

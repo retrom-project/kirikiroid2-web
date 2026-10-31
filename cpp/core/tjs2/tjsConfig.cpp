@@ -249,10 +249,13 @@ namespace TJS {
 
     //---------------------------------------------------------------------------
     void TJS_strcpy_maxlen(tjs_char *d, const tjs_char *s, size_t len) {
+        // Same copied characters and terminator as `len++; while((ch = *s)
+        // != 0 && --len)`, but the limit is tested before reading, so an
+        // unterminated fragment (e.g. IndexOf's single character) is never
+        // read past its end.
         tjs_char ch;
-        len++;
-        while((ch = *s) != 0 && --len)
-            *(d++) = ch, s++;
+        while(len && (ch = *s) != 0)
+            *(d++) = ch, s++, len--;
         *d = 0;
     }
 

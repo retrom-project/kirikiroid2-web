@@ -64,6 +64,9 @@ const float UI_CHANGE_DURATION = 0.3f;
 class TVPWindowLayer;
 
 static TVPWindowLayer *_lastWindowLayer, *_currentWindowLayer;
+#ifdef __EMSCRIPTEN__
+static bool _webWindowFocused = false;
+#endif
 
 class TVPWindowManagerOverlay;
 
@@ -395,6 +398,7 @@ class TVPWindowLayer : public cocos2d::extension::ScrollView,
     tjs_int ActualZoomNumer; // Zooming factor numerator (actual)
 #ifdef __EMSCRIPTEN__
     KirikiriWeb::FullScreenWindow WebFullScreen;
+    bool WebActivationNotified = false;
 #endif
     // Reference-binary ownership is through Node::_children, not these raw
     // observers: addChild retains PrimaryLayerArea, whose addChild in turn
@@ -911,6 +915,13 @@ public:
             }
             _currentWindowLayer = this;
         }
+#ifdef __EMSCRIPTEN__
+        // Native window switching parks the previous Cocos window off-screen.
+        // Web activation must also restore the selected window in the canvas,
+        // including a retained modal's return to an already-current window.
+        // This changes presentation only, not script window or layer geometry.
+        setPosition(Vec2::ZERO);
+#endif
     }
 
     void ShowWindowAsModal() override {
@@ -1403,7 +1414,13 @@ public:
         this->removeFromParent();
     }
 
-    bool GetWindowActive() override { return _currentWindowLayer == this; }
+    bool GetWindowActive() override {
+#ifdef __EMSCRIPTEN__
+        return _currentWindowLayer == this && _webWindowFocused;
+#else
+        return _currentWindowLayer == this;
+#endif
+    }
 
     int GetMouseButtonState() const {
         int s = 0;
@@ -2339,6 +2356,32 @@ void TVPMainScene::update(float delta) {
        canvasH != static_cast<int>(_lastFrameSize.height)) {
         _lastFrameSize = cocos2d::Size(canvasW, canvasH);
         onFrameSizeChanged();
+    }
+
+    // Observe browser focus on its main thread, then enqueue ordinary engine
+    // events here. Window scripts may start polling input only after onActivate.
+    _webWindowFocused = MAIN_THREAD_EM_ASM_INT({
+        return !document.hidden && document.hasFocus() ? 1 : 0;
+    });
+    TVPWindowLayer *activate = nullptr;
+    const tjs_int windowCount = TVPGetWindowCount();
+    for(tjs_int i = 0; i < windowCount; ++i) {
+        auto *window = TVPGetWindowListAt(i);
+        auto *form = static_cast<TVPWindowLayer *>(window->GetForm());
+        if(!form)
+            continue;
+        if(form->GetWindowActive() && window->CanDeliverEvents()) {
+            activate = form;
+        } else if(form->WebActivationNotified) {
+            form->WebActivationNotified = false;
+            window->FireOnActivate(false);
+        }
+    }
+    // Deliver deactivation before activation, independently of window-list
+    // order. Posting does not call scripts while the live forms are enumerated.
+    if(activate && !activate->WebActivationNotified) {
+        activate->WebActivationNotified = true;
+        activate->GetWindow()->FireOnActivate(true);
     }
 #endif
 

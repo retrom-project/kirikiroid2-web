@@ -29,6 +29,7 @@ addToLibrary({
       promiseState = {
         pending: null,
         stopping: false,
+        nativeFailed: false,
         waiting: null,
         target: null,
         wrapper: null,
@@ -52,14 +53,22 @@ addToLibrary({
     // The host cancels its readers after this synchronous pause, then awaits
     // this drain before releasing those globals. Only the resulting content
     // cancellation is expected; unrelated failures remain scheduler errors.
-    Module['krkr2StopMainLoop'] = (hostOperation) => {
+    Module['krkr2StopMainLoop'] = (hostOperation, discardNativeState) => {
       promiseState.stopping = true;
       MainLoop.pause();
       var cancelBookmark = () => Module['_krkr2_host_cancel_bookmark_load']();
       // A host checkpoint export may suspend independently of the paused frame
       // loop. Neither observer detachment nor Module/VLFS disposal may reenter
       // that Wasm stack before the reader cancellation has unwound it.
-      return Promise.allSettled([promiseState.pending, hostOperation]).then(cancelBookmark);
+      return Promise.allSettled([promiseState.pending, hostOperation]).then((results) => {
+        // A trap unwinds Wasm without C++ destructors and can strand allocator
+        // locks. Keep draining outstanding stacks, but discard this failed
+        // instance with its workers instead of reentering its native heap.
+        if (discardNativeState || promiseState.nativeFailed || results.some(
+            (result) => result.status === 'rejected' &&
+                result.reason instanceof WebAssembly.RuntimeError)) return;
+        return cancelBookmark();
+      });
     };
     // Browser-only frame-pump policy. Keep RAF as the sole scheduler, but use
     // its display-synchronised timestamp to limit how often the WASM main loop
@@ -147,6 +156,7 @@ addToLibrary({
           // resume are allowed to replace it while the tick is suspended.
           if (MainLoop.func && MainLoop.scheduler) MainLoop.scheduler();
         }, (error) => {
+          if (error instanceof WebAssembly.RuntimeError) promiseState.nativeFailed = true;
           if (promiseState.pending === pending) promiseState.pending = null;
           if (promiseState.waiting === pending) promiseState.waiting = null;
           if (!promiseState.stopping || error?.code !== 'CONTENT_IO_ABORTED') {

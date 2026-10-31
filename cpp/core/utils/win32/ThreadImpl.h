@@ -14,6 +14,7 @@
 #include "tjsNative.h"
 #include "ThreadIntf.h"
 #include <condition_variable>
+#include <pthread.h>
 #include <thread>
 
 //---------------------------------------------------------------------------
@@ -21,7 +22,7 @@
 //---------------------------------------------------------------------------
 class tTVPThread {
     bool Terminated;
-    std::thread Handle;
+    pthread_t Handle;
     // DWORD ThreadId;
     std::mutex _mutex; // for suspend
     std::condition_variable _cond;

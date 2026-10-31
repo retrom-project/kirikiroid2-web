@@ -404,6 +404,9 @@ void tTVPXP3Archive::Init(tTJSBinaryStream *st, tjs_int64 off,
             }
 
             // read index information from memory
+#ifdef __EMSCRIPTEN__
+            HashNamespace.ReadIndex(indexdata, index_size);
+#endif
             tjs_uint ch_file_start = 0;
             tjs_uint ch_file_size = index_size;
             // Count = 0;
@@ -501,6 +504,10 @@ void tTVPXP3Archive::Init(tTJSBinaryStream *st, tjs_int64 off,
                 break; // continue reading index when the bit sets
         }
 
+#ifdef __EMSCRIPTEN__
+        // RHx4's File index is a source-order binding, not a sorted index.
+        HashNamespace.Bind(ItemVector);
+#endif
         // sort item vector by its name (required for tTVPArchive
         // specification)
         if(normalizeName)

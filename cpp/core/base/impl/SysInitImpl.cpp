@@ -168,6 +168,10 @@ void TVPBeforeSystemInit() {
         TVPProjectDir += TJS_W("/");
     }
     TVPSetCurrentDirectory(TVPProjectDir);
+#ifdef __EMSCRIPTEN__
+    // Normalized container setup precedes the original, unchanged game entry.
+    TVPInitializeWebHashStorage(TVPProjectDir);
+#endif
     // randomize
     TVPInitRandomGenerator();
 
