@@ -242,6 +242,10 @@ TJS_EXP_FUNC_DEF(void, TVPSetCurrentDirectory, (const ttstr &name));
 // set system current directory.
 // directory must end with path delimiter '/',
 // or archive delimiter '>'.
+#ifdef __EMSCRIPTEN__
+// Install the Web container frontend only when the selected archive declares it.
+bool TVPInitializeWebHashStorage(const ttstr &projectDirectory);
+#endif
 
 TJS_EXP_FUNC_DEF(void, TVPGetLocalName, (ttstr & name));
 

@@ -13,6 +13,9 @@
 #define XP3ArchiveH
 
 #include "StorageIntf.h"
+#ifdef __EMSCRIPTEN__
+#include "Hxv4Namespace.h"
+#endif
 
 /*[*/
 //---------------------------------------------------------------------------
@@ -110,6 +113,11 @@ public:
     tjs_int Count = 0;
 
     std::vector<tArchiveItem> ItemVector;
+
+#ifdef __EMSCRIPTEN__
+    // Optional normalized Web metadata; ordinary XP3 keeps its native names.
+    tTVPWebHxv4Namespace HashNamespace;
+#endif
 
     void Init(tTJSBinaryStream *st, tjs_int64 offset,
               bool normalizeName = true);
