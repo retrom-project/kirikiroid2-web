@@ -40,6 +40,9 @@ project(${APP_NAME})
 option(ENABLE_TESTS "enable tests execute build(exclude android)" ON)
 option(BUILD_TOOLS "build tools execute build(exclude android ios)" ON)
 option(KRKR2_WEB_DEBUG_ENABLE_ASAN "enable AddressSanitizer in Web Debug builds" ON)
+# Diagnostic only: optimized Release code with recoverable AddressSanitizer
+# reports, so one run can reach late game states and keep every report.
+option(KRKR2_WEB_RELEASE_ASAN "enable recoverable AddressSanitizer in Web Release builds" OFF)
 option(KRKR2_WEB_ENABLE_SOURCE_MAP "emit a WebAssembly source map for Web builds" OFF)
 option(KRKR2_ENABLE_WASMTIME_HEADLESS "build the generic Wasmtime headless debug runner" OFF)
 if(NOT DEFINED KRKR2_USE_STUB_SPDLOG)
@@ -76,9 +79,13 @@ elseif(WEB)
         -fwasm-exceptions
         -msimd128
         $<$<AND:$<CONFIG:Debug>,$<BOOL:${KRKR2_WEB_DEBUG_ENABLE_ASAN}>>:-fsanitize=address>
+        $<$<BOOL:${KRKR2_WEB_RELEASE_ASAN}>:-fsanitize=address>
+        $<$<BOOL:${KRKR2_WEB_RELEASE_ASAN}>:-fsanitize-recover=address>
+        $<$<BOOL:${KRKR2_WEB_RELEASE_ASAN}>:-gline-tables-only>
         $<$<BOOL:${KRKR2_WEB_ENABLE_SOURCE_MAP}>:-gline-tables-only>
     )
-    add_link_options($<$<AND:$<CONFIG:Debug>,$<BOOL:${KRKR2_WEB_DEBUG_ENABLE_ASAN}>>:-fsanitize=address>)
+    add_link_options($<$<AND:$<CONFIG:Debug>,$<BOOL:${KRKR2_WEB_DEBUG_ENABLE_ASAN}>>:-fsanitize=address>
+        $<$<BOOL:${KRKR2_WEB_RELEASE_ASAN}>:-fsanitize=address>)
 endif()
 
 if(ANDROID)
@@ -93,6 +100,9 @@ elseif(WEB)
     add_executable(${PROJECT_NAME}
         ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/main.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.c)
+    if(KRKR2_WEB_RELEASE_ASAN)
+        target_sources(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/asan_recover_options.c)
+    endif()
     set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "index" SUFFIX ".html")
     set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js
@@ -107,7 +117,7 @@ elseif(WEB)
     # ASan 请求 1 GiB，但链接器仍可能按静态数据与影子内存上调实际最小内存；
     # 6.0.9 当前构建约为 1.29 GiB。链接后的 sync_prealloc_memory.cmake 会从
     # index.js 读取实际默认值并更新 shell，不能假定链接请求值就是 wasm min。
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND KRKR2_WEB_DEBUG_ENABLE_ASAN)
+    if((CMAKE_BUILD_TYPE STREQUAL "Debug" AND KRKR2_WEB_DEBUG_ENABLE_ASAN) OR KRKR2_WEB_RELEASE_ASAN)
         set(KRKR2_WEB_INITIAL_MEMORY 1073741824)  # 1 GiB
     else()
         set(KRKR2_WEB_INITIAL_MEMORY 67108864)    # 64 MiB
@@ -135,6 +145,10 @@ elseif(WEB)
         "$<$<CONFIG:Debug>:SHELL:-s ASSERTIONS=2>"
         "SHELL:-s FORCE_FILESYSTEM=1"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
+        # Emscripten 6.0.9 makes the pthread script override opt-in. Preserve its
+        # default incoming API and accept the host's verified Blob script URL
+        # in both Debug and Release instead of ignoring it without assertions.
+        "SHELL:-s INCOMING_MODULE_JS_API=['ENVIRONMENT','arguments','canvas','dynamicLibraries','elementPointerLock','instantiateWasm','locateFile','monitorRunDependencies','noExitRuntime','noInitialRun','onAbort','onExit','onRuntimeInitialized','postRun','preInit','preRun','print','printErr','setStatus','statusMessage','stderr','stdin','stdout','thisProgram','wasm','websocket','mainScriptUrlOrBlob']"
         "SHELL:-s EXPORTED_FUNCTIONS=['_main','_krkr2_host_set_engine_mode','_krkr2_host_resource_overlay_abi','_krkr2_host_engine_arguments_abi','_krkr2_host_local_steam_service_abi','_krkr2_host_bookmark_is_ready','_krkr2_host_load_bookmark_is_ready','_krkr2_host_save_bookmark','_krkr2_host_load_bookmark','_krkr2_host_load_bookmark_state','_krkr2_host_cancel_bookmark_load','_krkr2_host_observe_game_saves','_krkr2_host_flush_game_saves','_krkr2_host_finalize_native_exit']"
         "SHELL:-s PTHREAD_POOL_SIZE=${KRKR2_WEB_PTHREAD_POOL_SIZE}"
         "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=1048576"
@@ -161,7 +175,10 @@ elseif(WEB)
         -Wl,--wrap=_emscripten_yield
         -fwasm-exceptions
         $<$<BOOL:${KRKR2_WEB_ENABLE_SOURCE_MAP}>:-gsource-map>
-        $<$<CONFIG:Debug>:--emit-symbol-map>
+        # Retain symbols from the same link as the deployed Wasm, including
+        # Release crashes. The map stays in the build output; public runtime
+        # staging copies only the declared core assets.
+        --emit-symbol-map
         $<$<CONFIG:Debug>:-g2>
         $<$<CONFIG:Debug>:-O1>
         -pthread
