@@ -289,3 +289,51 @@ for (const rejectOperation of [false, true]) {
   assert.equal(cancelled, 1, "cancel observer only after the host operation returns");
 }
 console.log("JSPI host checkpoint drain tests passed");
+
+// A Wasm trap can leave native allocator locks held. Drain the original stack
+// but never enter TJS or free native observers after that fatal boundary.
+// Cover both a trap already reported to the host and one arriving during stop.
+for (const mode of ["reported", "draining", "settled"]) {
+  let finishTick;
+  let finishOperation;
+  const failure = new WebAssembly.RuntimeError("memory access out of bounds");
+  const tick = new Promise((resolve, reject) => {
+    finishTick = () => mode === "reported" ? resolve() : reject(failure);
+  });
+  const operation = new Promise(resolve => { finishOperation = resolve; });
+  const errors = [];
+  let cancelled = 0;
+  let api;
+  const loop = {func: null, scheduler: null, pause() { this.scheduler = null; }};
+  const instance = {_krkr2_host_cancel_bookmark_load() { ++cancelled; }};
+  const sandbox = vm.createContext({
+    addToLibrary(value) { api = value; }, MainLoop: loop, Module: instance,
+    setMainLoop(fn) { loop.func = fn; loop.scheduler = () => {}; },
+    handleException(error) { errors.push(error); },
+    wasmTable: {get() { return () => {}; }},
+    krkr2JspiContext: {promising() { return () => tick; }},
+    URLSearchParams, performance: {now: () => 0}, location: {search: ""},
+    requestAnimationFrame() {}, Promise, Map, Number, Object, document: {}, WebAssembly,
+  });
+  vm.runInContext(source, sandbox);
+  api.emscripten_set_main_loop_arg(1, 0, 0, false);
+  loop.func(); loop.scheduler();
+  if (mode === "settled") {
+    finishTick(); await tick.catch(() => {}); await Promise.resolve();
+    assert.equal(sandbox.__krkr2MainLoopPromiseState.pending, null);
+  }
+  let stopped = false;
+  const stopping = instance.krkr2StopMainLoop(operation, mode === "reported")
+      .then(() => { stopped = true; });
+  assert.equal(loop.scheduler, null);
+  if (mode !== "settled") finishTick();
+  await tick.catch(() => {});
+  await Promise.resolve();
+  assert.equal(stopped, false, "retain a separate checkpoint's suspended stack");
+  assert.equal(cancelled, 0, "fatal stop cannot release native objects");
+  finishOperation(); await stopping;
+  assert.equal(cancelled, 0, "a failed heap must be discarded with its worker context");
+  assert.deepEqual(errors, mode === "reported" ? [] : [failure],
+      "an unreported trap remains a scheduler failure");
+}
+console.log("JSPI fatal stop/drain tests passed");
