@@ -64,14 +64,11 @@ void VideoPresentLayer::OnContinuousCallback(tjs_uint64 tick) {
     // unlocked and is not repeated after taking m_mtxPicture.
     if(!m_usedPicture)
         return;
-    double m_curpts = m_pPlayer->GetClock() / DVD_TIME_BASE;
+    const double currentPts = m_pPlayer->GetClock() / DVD_TIME_BASE;
+    double picturePts;
     {
         std::lock_guard<std::mutex> lk(m_mtxPicture);
-        BitmapPicture &picbuf = m_picture[m_curPicture];
-        // check pts
-        if(picbuf.pts > m_curpts) { // present in future
-            return;
-        }
+        picturePts = m_picture[m_curPicture].pts;
     }
 #if 0
         do { // skip frame
@@ -82,7 +79,8 @@ void VideoPresentLayer::OnContinuousCallback(tjs_uint64 tick) {
         } while (m_usedPicture > 0 && m_curpts >= m_picture[m_curPicture].pts);
         assert(m_usedPicture >= 0);
 #endif
-    OnPlayEvent(KRMovieEvent::Update, nullptr);
+    if(picturePts <= currentPts)
+        OnPlayEvent(KRMovieEvent::Update, nullptr);
 }
 
 int VideoPresentLayer::AddVideoPicture(DVDVideoPicture &pic, int index) {
