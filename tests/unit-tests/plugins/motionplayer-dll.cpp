@@ -12962,6 +12962,7 @@ TEST_CASE("KRKR D3D source path builds and uploads the production atlas") {
 }
 
 TEST_CASE("Player variableKeys returns a fresh var-track array") {
+    ScopedCoreScriptEngine scriptEngine;
     motion::Player player{makeTestResourceManagerDispatch()};
 
     const auto first = player.getVariableKeys();
@@ -12991,6 +12992,23 @@ TEST_CASE("Player variableKeys returns a fresh var-track array") {
     REQUIRE(ttstr(getIndex(populated, 1)) == TJS_W("first"));
     REQUIRE(ttstr(getIndex(populated, 2)) == TJS_W("second"));
     REQUIRE(ttstr(getIndex(populated, 3)).IsEmpty());
+
+    using PlayerAdaptor = ncbInstanceAdaptor<motion::Player>;
+    iTJSDispatch2 *dispatch = PlayerAdaptor::CreateAdaptor(&player, true);
+    REQUIRE(dispatch != nullptr);
+    tTJSVariant scriptKeys;
+    REQUIRE(dispatch->PropGet(0, TJS_W("varibleKeys"), nullptr,
+                              &scriptKeys, dispatch) == TJS_S_OK);
+    REQUIRE(scriptKeys.AsObjectNoAddRef() != populated.AsObjectNoAddRef());
+    REQUIRE(variantCount(scriptKeys) == 4);
+    for(tjs_int index = 0; index < 4; ++index) {
+        REQUIRE(ttstr(getIndex(scriptKeys, index)) ==
+                ttstr(getIndex(populated, index)));
+    }
+    tTJSVariant replacement(7);
+    REQUIRE(dispatch->PropSet(0, TJS_W("varibleKeys"), nullptr,
+                              &replacement, dispatch) == TJS_E_ACCESSDENYED);
+    dispatch->Release();
 }
 
 TEST_CASE("Motion EmotePlayer scale surfaces share the raw Engine triplet") {
