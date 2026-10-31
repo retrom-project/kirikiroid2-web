@@ -3,6 +3,7 @@
 // source code url: https://github.com/wamsoft/windowEx/blob
 //
 #include <cstdint>
+#include <vector>
 
 typedef unsigned long DWORD;
 
@@ -835,9 +836,27 @@ struct WindowEx {
 
     void modifySystemMenu();
 
-    bool setMessageHookOnel(bool on, tjs_int num) { return enableWinMsgHook; }
+    bool setMessageHookOnel(bool on, tjs_int num) {
+        if(num < 0 || num >= 0x400) return enableWinMsgHook;
+        const std::uint32_t mask = std::uint32_t{1} << (num & 31);
+        if(on) bitHooks[num >> 5] |= mask;
+        else bitHooks[num >> 5] &= ~mask;
+        enableWinMsgHook = false;
+        for(const auto word : bitHooks) {
+            if(word) { enableWinMsgHook = true; break; }
+        }
+        return enableWinMsgHook;
+    }
 
-    bool setMessageHookAll(bool on) { return (enableWinMsgHook = on); }
+    bool setMessageHookAll(bool on) {
+        for(auto &word : bitHooks) word = on ? UINT32_MAX : 0;
+        return (enableWinMsgHook = on);
+    }
+
+    bool hasMessageHook(tjs_uint num) const {
+        return enableWinMsgHook && num < 0x400 &&
+            (bitHooks[num >> 5] & (std::uint32_t{1} << (num & 31))) != 0;
+    }
 
     static tjs_int getWindowNotificationNum(ttstr key) {
         tTJSVariant tmp;
@@ -985,7 +1004,7 @@ private:
     bool disableMove; //< ウィンドウ移動禁止
     bool enableNCMEvent; //< WM_SETCURSORコールバック
     bool enableWinMsgHook; //< メッセージフック有効
-    DWORD bitHooks[0x0400 / 32];
+    std::uint32_t bitHooks[0x0400 / 32];
 
 public:
     //----------------------------------------------------------
@@ -1009,6 +1028,31 @@ public:
         //        static ATOM WindowClass;
     } *ovbmp;
 };
+
+#ifdef __EMSCRIPTEN__
+void TVPDeliverBrowserGamepadDeviceChange() {
+    // A callback may close windows. Retain script owners before delivering
+    // events instead of traversing a mutable native window list during them.
+    std::vector<tTJSVariant> owners;
+    const auto count = TVPGetWindowCount();
+    for(tjs_int i = 0; i < count; ++i) {
+        auto *window = TVPGetWindowListAt(i);
+        if(window && window->GetOwnerNoAddRef())
+            owners.emplace_back(window->GetOwnerNoAddRef(), window->GetOwnerNoAddRef());
+    }
+    for(const auto &owner : owners) {
+        auto *window = owner.AsObjectNoAddRef();
+        if(window->IsValid(0, nullptr, nullptr, window) != TJS_S_TRUE) continue;
+        auto *extension = WindowEx::GetInstance(window);
+        if(!extension || !extension->hasMessageHook(WM_DEVICECHANGE) ||
+           !extension->hasMember(EXEV_MSGHOOK)) continue;
+        tTJSVariant arguments[] = {tTJSVariant(WM_DEVICECHANGE), tTJSVariant(7),
+                                   tTJSVariant(0), tTJSVariant(0)};
+        ttstr eventName(EXEV_MSGHOOK);
+        TVPPostEvent(window, window, eventName, 0, TVP_EPT_IMMEDIATE, 4, arguments);
+    }
+}
+#endif
 
 // 拡張イベント用ネイティブインスタンスゲッタ
 NCB_GET_INSTANCE_HOOK(WindowEx){
