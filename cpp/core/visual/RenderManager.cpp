@@ -1778,20 +1778,27 @@ public:
     void PartialCopy(iTVPTexture2D *dst, tjs_int dx, tjs_int dy,
                      iTVPTexture2D *src, tjs_int sx, tjs_int sy, tjs_int w,
                      tjs_int h, bool backwardCopy) {
-        // 32bpp
-        w *= sizeof(tjs_uint32);
+        // Intentional deviation: the reference always copies 4 bytes per
+        // pixel here, which overruns 8bpp (province) bitmaps by up to three
+        // rows and corrupts the allocator heap. Use the target pixel size.
+        const tjs_int pixelsize = dst->GetFormat() == TVPTextureFormat::Gray
+            ? sizeof(tjs_uint8)
+            : sizeof(tjs_uint32);
+        w *= pixelsize;
         if(backwardCopy) {
             for(tjs_int y = h - 1; y >= 0; --y) {
-                memmove(((tjs_uint32 *)dst->GetScanLineForWrite(dy + y)) + dx,
-                        ((const tjs_uint32 *)src->GetScanLineForRead(sy + y)) +
-                            sx,
+                memmove((tjs_uint8 *)dst->GetScanLineForWrite(dy + y) +
+                            dx * pixelsize,
+                        (const tjs_uint8 *)src->GetScanLineForRead(sy + y) +
+                            sx * pixelsize,
                         w);
             }
         } else {
             for(tjs_int y = 0; y < h; ++y) {
-                memmove(((tjs_uint32 *)dst->GetScanLineForWrite(dy + y)) + dx,
-                        ((const tjs_uint32 *)src->GetScanLineForRead(sy + y)) +
-                            sx,
+                memmove((tjs_uint8 *)dst->GetScanLineForWrite(dy + y) +
+                            dx * pixelsize,
+                        (const tjs_uint8 *)src->GetScanLineForRead(sy + y) +
+                            sx * pixelsize,
                         w);
             }
         }
