@@ -50,8 +50,6 @@ set(_KRKR2_NCBIND_SOURCES
     shrinkCopy.cpp
     layerExBTOA.cpp
     layerExRaster.cpp
-    layerExParticle.cpp
-    layerExParticleManager.cpp
     PackinOne.cpp
     datapack/DataPack.cpp
     datapack/Reader.cpp
