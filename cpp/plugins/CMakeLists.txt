@@ -22,6 +22,7 @@ set(_PLUGIN_SOURCES
     layerExMovie.cpp
     kirikiroid2.cpp
     lzfs.cpp
+    json/jsonPlugin.cpp
 )
 target_sources(${PROJECT_NAME} PRIVATE ${_PLUGIN_SOURCES})
 
