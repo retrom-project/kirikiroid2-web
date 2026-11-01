@@ -856,6 +856,14 @@ public:
             _mouseCursor->setPosition(pt);
             _refadeMouseCursor();
         }
+#ifdef __EMSCRIPTEN__
+        // Platform boundary: Win32 ::SetCursorPos makes the system send
+        // WM_MOUSEMOVE, which games use to hover the button a key or pad moved
+        // the cursor to. A browser cannot move its pointer, so post that move
+        // here in the same window coordinates as onMouseMove.
+        TVPPostInputEvent(new tTVPOnMouseMoveInputEvent(
+            TJSNativeInstance, x, y, TVPGetCurrentShiftKeyState()));
+#endif
     }
 
     void SetHintText(const ttstr &text) override {}
