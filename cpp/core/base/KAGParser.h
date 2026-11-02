@@ -193,11 +193,16 @@ private:
     iTJSDispatch2 *Macros; // Macro Dictionary Object
     iTJSDispatch2 *ParamMacros; // parameter name -> ordered [name,value,...] Array
 
-    // Each macro argument keeps its values dictionary paired with an ordered
-    // Array of attribute names. Forwarding '*' enumerates that names Array.
+    // Default parsers retain a Dictionary per macro argument. Extended
+    // parsers retain the values and their ordered attribute names separately.
+    std::vector<iTJSDispatch2 *> DefaultMacroArgs;
     std::vector<std::pair<iTJSDispatch2 *, iTJSDispatch2 *>> MacroArgs;
     tjs_uint MacroArgStackDepth;
     tjs_uint MacroArgStackBase;
+
+    bool UsesDefaultMacroArgs() const {
+        return !ReturnsTagList() && !HasExtendedControlFlow();
+    }
 
     // ExtKAGParser owns a real script Array of local Dictionary objects.
     // The base instance leaves this Variant void and never uses these states.

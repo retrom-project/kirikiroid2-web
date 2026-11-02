@@ -1,6 +1,6 @@
 # KAGParser 参数宏：四参考对照
 
-本轮在修改 `cpp/core/base/KAGParser.{cpp,h}` 前完成四文件原生 IDA 取证。范围是 `KAGParserEx.cpp` 注册为 KAGParser 类的参数宏机制；同一镜像另有核心 KAGParser、Exb 和 ExtKAGParser 实现，下面不混用它们的地址或字段。后续完整 iscript 取证确认了这些模块边界，详见 `extkagparser-macro-iscript-four-reference.md`。现有 `MacroArgs` 的 `{values Dictionary, ordered names Array}` 栈与参数宏注册表是两种独立状态。
+本轮在修改 `cpp/core/base/KAGParser.{cpp,h}` 前完成四文件原生 IDA 取证。范围是 `KAGParserEx.cpp` 注册为 KAGParser 类的参数宏机制；同一镜像另有核心 KAGParser、Exb 和 ExtKAGParser 实现，下面不混用它们的地址或字段。后续完整 iscript 取证确认了这些模块边界，详见 `extkagparser-macro-iscript-four-reference.md`。扩展实现的 `{values Dictionary, ordered names Array}` 宏栈与参数宏注册表是两种独立状态；默认类的不同宏栈见 `kagparser-default-macro-args-four-reference.md`。
 
 ## 目标和完整函数映射
 
