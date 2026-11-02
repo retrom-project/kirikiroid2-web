@@ -52,6 +52,7 @@ set(_KRKR2_NCBIND_SOURCES
     xp3filter.cpp
     shrinkCopy.cpp
     layerExBTOA.cpp
+    layerExSave.cpp
     layerExRaster.cpp
     PackinOne.cpp
     datapack/DataPack.cpp
