@@ -85,8 +85,9 @@ Ex 同时持有原类引用，Exb 预取 Dictionary / Array 方法。Exb 的模�
 1. `AttachTagList` 现有 PropSetByVS 的键、可枚举 flags、variant 与数组身份
    对应 Ex / Exb helper，本身不应改成 hidden 或移除。
 2. 默认 `tTJSNI_KAGParser` 增加受保护的输出能力方法，默认关闭；
-   `AttachTagList` 在默认及 Ext 实例中不写元数据。现有内部有序名字数组、
-   参数宏及存档逻辑保持原来实现，避免把输出修复扩展成宏状态重写。
+   `AttachTagList` 在默认及 Ext 实例中不写元数据。当时未改变内部宏状态；
+   后续四参考取证发现默认类与扩展类的宏栈和存档格式不同，详见
+   `kagparser-default-macro-args-four-reference.md`。
 3. Ex 和 Exb 使用独立 NI factory，在共享扫描器中仅开启这项能力。
    能力属于实例类型，不放入全局开关或保存状态，assign / restore 不改变种类。
 4. 两个显式命名插件分别按 PreRegist / PostRegist 安装新的 KAGParser 类。

@@ -22,6 +22,7 @@ set(_PLUGIN_SOURCES
     layerExMovie.cpp
     kirikiroid2.cpp
     lzfs.cpp
+    json/jsonPlugin.cpp
 )
 target_sources(${PROJECT_NAME} PRIVATE ${_PLUGIN_SOURCES})
 
@@ -51,6 +52,7 @@ set(_KRKR2_NCBIND_SOURCES
     xp3filter.cpp
     shrinkCopy.cpp
     layerExBTOA.cpp
+    layerExSave.cpp
     layerExRaster.cpp
     PackinOne.cpp
     datapack/DataPack.cpp
