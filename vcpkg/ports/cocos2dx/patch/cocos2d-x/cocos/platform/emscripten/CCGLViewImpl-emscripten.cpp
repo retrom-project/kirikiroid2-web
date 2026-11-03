@@ -91,7 +91,10 @@ bool GLViewImpl::initWithRect(const std::string& viewName, Rect rect, float fram
     }
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    // Emscripten maps GLES 3 to WebGL2. MAX_WEBGL_VERSION only sets an upper
+    // limit; requesting GLES 2 here still creates WebGL1, without the VAO and
+    // GLSL ES 3 support used by the Z Canvas and model rendering APIs.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
@@ -352,6 +355,19 @@ void GLViewImpl::handleSDLEvents()
     }
 }
 
+static EventMouse::MouseButton mouseButtonFromSDL(Uint8 button)
+{
+    // SDL orders the middle button before the right button; Cocos orders the
+    // right button before the middle button. Other button numbers retain their
+    // existing one-based to zero-based mapping.
+    switch (button) {
+    case SDL_BUTTON_LEFT: return EventMouse::MouseButton::BUTTON_LEFT;
+    case SDL_BUTTON_RIGHT: return EventMouse::MouseButton::BUTTON_RIGHT;
+    case SDL_BUTTON_MIDDLE: return EventMouse::MouseButton::BUTTON_MIDDLE;
+    default: return static_cast<EventMouse::MouseButton>(button - 1);
+    }
+}
+
 void GLViewImpl::onMouseEvent(SDL_Event& event)
 {
     float dprScaleX, dprScaleY;
@@ -377,7 +393,7 @@ void GLViewImpl::onMouseEvent(SDL_Event& event)
 
         EventMouse mouseEvent(EventMouse::MouseEventType::MOUSE_DOWN);
         mouseEvent.setCursorPosition(glX, glY);
-        mouseEvent.setMouseButton(static_cast<EventMouse::MouseButton>(event.button.button - 1));
+        mouseEvent.setMouseButton(mouseButtonFromSDL(event.button.button));
         Director::getInstance()->getEventDispatcher()->dispatchEvent(&mouseEvent);
         break;
     }
@@ -391,7 +407,7 @@ void GLViewImpl::onMouseEvent(SDL_Event& event)
 
         EventMouse mouseEvent(EventMouse::MouseEventType::MOUSE_UP);
         mouseEvent.setCursorPosition(glX, glY);
-        mouseEvent.setMouseButton(static_cast<EventMouse::MouseButton>(event.button.button - 1));
+        mouseEvent.setMouseButton(mouseButtonFromSDL(event.button.button));
         Director::getInstance()->getEventDispatcher()->dispatchEvent(&mouseEvent);
         break;
     }

@@ -60,6 +60,9 @@
 #include "LogoTrace.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#include "../environ/web/WebCanvas.h"
+
+void TVPRegisterWebFontMethods(tTJSNativeClass *font);
 
 // Web host boundary: this is called only after System.exceptionHandler has
 // declined the exception. Ordinary script dialogs and caught errors do not
@@ -456,6 +459,8 @@ static bool TVPScriptEngineInit = false;
 #ifdef __EMSCRIPTEN__
 static bool TVPWebKirikiriZ = false;
 
+bool TVPIsWebKirikiriZMode() { return TVPWebKirikiriZ; }
+
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_set_engine_mode(int mode) {
     if(TVPScriptEngineInit || (mode != 0 && mode != 1))
         return -1;
@@ -559,7 +564,11 @@ void TVPInitScriptEngine() {
 
     /* classes */
     registerObject(TJS_W("Debug"), TVPCreateNativeClass_Debug());
-    registerObject(TJS_W("Font"), TVPCreateNativeClass_Font());
+    auto *font = TVPCreateNativeClass_Font();
+#ifdef __EMSCRIPTEN__
+    TVPRegisterWebFontMethods(font);
+#endif
+    registerObject(TJS_W("Font"), font);
     registerObject(TJS_W("Layer"), TVPCreateNativeClass_Layer());
     registerObject(TJS_W("CDDASoundBuffer"),
                    TVPCreateNativeClass_CDDASoundBuffer());
@@ -596,9 +605,11 @@ void TVPInitScriptEngine() {
                        TJS_W("PhaseVocoder"), nullptr, &val, waveclass);
 
     /* Window and its drawdevices */
-    iTJSDispatch2 *windowclass = nullptr;
-    registerObject(TJS_W("Window"),
-                   (windowclass = TVPCreateNativeClass_Window()));
+    auto *windowclass = TVPCreateNativeClass_Window();
+    registerObject(TJS_W("Window"), windowclass);
+#ifdef __EMSCRIPTEN__
+    TVPRegisterWebCanvasClasses(global, windowclass);
+#endif
     dsp = new tTJSNC_BasicDrawDevice();
     val = tTJSVariant(dsp);
     dsp->Release();

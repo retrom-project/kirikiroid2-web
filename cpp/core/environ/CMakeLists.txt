@@ -26,6 +26,11 @@ set(ENVIRON_SOURCE_FILES
     $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/HostBookmarkBridge.cpp>
     $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/HostStructuredSave.cpp>
     $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/HostResourceOverlay.cpp>
+    $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/WebFontRegistration.cpp>
+    $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/WebCanvas.cpp>
+    $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/WebCanvasBindings.cpp>
+    $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/WebCanvasWindow.cpp>
+    $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/WebPointerEvents.cpp>
     $<$<BOOL:${WEB}>:${ENVIRON_PATH}/web/VirtualLazyFS.cpp>
 
     ${ENVIRON_PATH}/cocos2d/AppDelegate.cpp
