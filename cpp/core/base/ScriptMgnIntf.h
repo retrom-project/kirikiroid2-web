@@ -23,6 +23,11 @@ extern ttstr TVPStartupScriptName;
 
 extern void TVPInitScriptEngine();
 
+#ifdef __EMSCRIPTEN__
+// The explicit host-selected engine mode, shared by Web Z API boundaries.
+extern bool TVPIsWebKirikiriZMode();
+#endif
+
 extern void TVPUninitScriptEngine();
 
 extern void TVPRestartScriptEngine();

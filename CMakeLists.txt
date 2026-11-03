@@ -108,6 +108,10 @@ elseif(WEB)
         ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js
         ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.js
         ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/vlfs.js
+        ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-physics.js
+        ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-animation.js
+        ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-controller.js
+        ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism.js
         ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/version_web_entrypoint.cmake)
     # WebAssembly.Memory 初始大小。ASan 的影子内存（覆盖整个地址空间的 1/8）+
     # redzone 把静态数据段顶得很高，wasm 模块声明的最小内存随之暴涨（非 ASan ~64MB，
@@ -149,7 +153,7 @@ elseif(WEB)
         # default incoming API and accept the host's verified Blob script URL
         # in both Debug and Release instead of ignoring it without assertions.
         "SHELL:-s INCOMING_MODULE_JS_API=['ENVIRONMENT','arguments','canvas','dynamicLibraries','elementPointerLock','instantiateWasm','locateFile','monitorRunDependencies','noExitRuntime','noInitialRun','onAbort','onExit','onRuntimeInitialized','postRun','preInit','preRun','print','printErr','setStatus','statusMessage','stderr','stdin','stdout','thisProgram','wasm','websocket','mainScriptUrlOrBlob']"
-        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_krkr2_host_set_engine_mode','_krkr2_host_resource_overlay_abi','_krkr2_host_engine_arguments_abi','_krkr2_host_local_steam_service_abi','_krkr2_host_bookmark_is_ready','_krkr2_host_load_bookmark_is_ready','_krkr2_host_save_bookmark','_krkr2_host_load_bookmark','_krkr2_host_load_bookmark_state','_krkr2_host_cancel_bookmark_load','_krkr2_host_observe_game_saves','_krkr2_host_flush_game_saves','_krkr2_host_finalize_native_exit']"
+        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_malloc','_krkr2_host_set_engine_mode','_krkr2_host_resource_overlay_abi','_krkr2_host_engine_arguments_abi','_krkr2_host_local_steam_service_abi','_krkr2_host_bookmark_is_ready','_krkr2_host_load_bookmark_is_ready','_krkr2_host_save_bookmark','_krkr2_host_load_bookmark','_krkr2_host_load_bookmark_state','_krkr2_host_cancel_bookmark_load','_krkr2_host_observe_game_saves','_krkr2_host_flush_game_saves','_krkr2_host_finalize_native_exit']"
         "SHELL:-s PTHREAD_POOL_SIZE=${KRKR2_WEB_PTHREAD_POOL_SIZE}"
         "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=1048576"
         # VirtualLazyFS: 主线程文件读经 JSPI 挂起等待 JS 异步供数
@@ -167,6 +171,10 @@ elseif(WEB)
         "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick','krkr2_host_flush_game_saves','krkr2_host_finalize_native_exit']"
         "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js"
         "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.js"
+        "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-physics.js"
+        "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-animation.js"
+        "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-controller.js"
+        "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism.js"
         -Wl,--wrap=pthread_create
         -Wl,--wrap=__pthread_create
         -Wl,--wrap=emscripten_builtin_pthread_create

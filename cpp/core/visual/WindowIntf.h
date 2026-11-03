@@ -20,6 +20,10 @@
 #include "DrawDevice.h"
 #include "LayerTreeOwner.h"
 
+#ifdef __EMSCRIPTEN__
+#include "../environ/web/WebPointerEvents.h"
+#endif
+
 #define USE_OBSOLETE_FUNCTIONS
 
 //---------------------------------------------------------------------------
@@ -404,7 +408,14 @@ public:
         tTVPBaseInputEvent(win, Tag), X(x), Y(y), Buttons(buttons),
         Flags(flags) {};
     void Deliver() const override {
+#ifdef __EMSCRIPTEN__
+        tTVPWebPointerEvent pointer((tTJSNI_BaseWindow *)GetSource());
+#endif
         ((tTJSNI_BaseWindow *)GetSource())->OnMouseDown(X, Y, Buttons, Flags);
+#ifdef __EMSCRIPTEN__
+        pointer.Deliver(tTVPWebPointerEvent::Phase::Down,
+                        (tjs_int)Buttons + 1, (tjs_real)X, (tjs_real)Y, 1.0, 1.0, Flags, 0);
+#endif
     }
 };
 //---------------------------------------------------------------------------
@@ -421,7 +432,14 @@ public:
         tTVPBaseInputEvent(win, Tag), X(x), Y(y), Buttons(buttons),
         Flags(flags) {};
     void Deliver() const override {
+#ifdef __EMSCRIPTEN__
+        tTVPWebPointerEvent pointer((tTJSNI_BaseWindow *)GetSource());
+#endif
         ((tTJSNI_BaseWindow *)GetSource())->OnMouseUp(X, Y, Buttons, Flags);
+#ifdef __EMSCRIPTEN__
+        pointer.Deliver(tTVPWebPointerEvent::Phase::Up,
+                        (tjs_int)Buttons + 1, (tjs_real)X, (tjs_real)Y, 1.0, 1.0, Flags, 0);
+#endif
     }
 };
 //---------------------------------------------------------------------------
@@ -436,7 +454,14 @@ public:
                               tjs_uint32 flags) :
         tTVPBaseInputEvent(win, Tag), X(x), Y(y), Flags(flags) {};
     void Deliver() const override {
+#ifdef __EMSCRIPTEN__
+        tTVPWebPointerEvent pointer((tTJSNI_BaseWindow *)GetSource());
+#endif
         ((tTJSNI_BaseWindow *)GetSource())->OnMouseMove(X, Y, Flags);
+#ifdef __EMSCRIPTEN__
+        pointer.Deliver(tTVPWebPointerEvent::Phase::Move,
+                        6, (tjs_real)X, (tjs_real)Y, 1.0, 1.0, Flags, 0);
+#endif
     }
 };
 //---------------------------------------------------------------------------
@@ -594,7 +619,14 @@ public:
                               tjs_real cx, tjs_real cy, tjs_uint32 id) :
         tTVPBaseInputEvent(win, Tag), X(x), Y(y), CX(cx), CY(cy), ID(id) {};
     void Deliver() const override {
+#ifdef __EMSCRIPTEN__
+        tTVPWebPointerEvent pointer((tTJSNI_BaseWindow *)GetSource());
+#endif
         ((tTJSNI_BaseWindow *)GetSource())->OnTouchDown(X, Y, CX, CY, ID);
+#ifdef __EMSCRIPTEN__
+        pointer.Deliver(tTVPWebPointerEvent::Phase::Down,
+                        7, X, Y, CX, CY, 0, ID);
+#endif
     }
 };
 //---------------------------------------------------------------------------
@@ -611,7 +643,14 @@ public:
                             tjs_real cx, tjs_real cy, tjs_uint32 id) :
         tTVPBaseInputEvent(win, Tag), X(x), Y(y), CX(cx), CY(cy), ID(id) {};
     void Deliver() const override {
+#ifdef __EMSCRIPTEN__
+        tTVPWebPointerEvent pointer((tTJSNI_BaseWindow *)GetSource());
+#endif
         ((tTJSNI_BaseWindow *)GetSource())->OnTouchUp(X, Y, CX, CY, ID);
+#ifdef __EMSCRIPTEN__
+        pointer.Deliver(tTVPWebPointerEvent::Phase::Up,
+                        7, X, Y, CX, CY, 0, ID);
+#endif
     }
 };
 //---------------------------------------------------------------------------
@@ -628,7 +667,14 @@ public:
                               tjs_real cx, tjs_real cy, tjs_uint32 id) :
         tTVPBaseInputEvent(win, Tag), X(x), Y(y), CX(cx), CY(cy), ID(id) {};
     void Deliver() const override {
+#ifdef __EMSCRIPTEN__
+        tTVPWebPointerEvent pointer((tTJSNI_BaseWindow *)GetSource());
+#endif
         ((tTJSNI_BaseWindow *)GetSource())->OnTouchMove(X, Y, CX, CY, ID);
+#ifdef __EMSCRIPTEN__
+        pointer.Deliver(tTVPWebPointerEvent::Phase::Move,
+                        7, X, Y, CX, CY, 0, ID);
+#endif
     }
 };
 //---------------------------------------------------------------------------

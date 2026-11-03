@@ -91,6 +91,16 @@ else()
 endif()
 
 add_library(krkr2plugins_ncbind STATIC ${_KRKR2_NCBIND_SOURCES})
+if(EMSCRIPTEN)
+    target_sources(krkr2plugins_ncbind PRIVATE
+        mdkparser/MDKParser.cpp
+        mdkparser/MDKParserNative.cpp
+        mdkparser/MDKParserPlugin.cpp
+        cubism/CubismWebBridge.cpp
+        cubism/CubismNative.cpp
+        cubism/CubismPlugin.cpp
+    )
+endif()
 set_source_files_properties(
     extrans/Main.cpp
     extrans/wave.cpp

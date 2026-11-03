@@ -13,6 +13,20 @@ forced-family convention, vertical-family marker and `force_default_font`
 setting retain their meanings. The substitute is loaded on demand and does not
 replace the selected default font.
 
+## Font file registration
+
+The Web core provides the static `Font.addFont(storage)` interface for scripts
+that register a font through the KiriKiri Z Font class. It resolves the storage
+through the existing virtual filesystem and registers its faces with FreeType.
+The result is a TJS Array of registered family names for that storage, including
+available localized names. An absent or unloadable font produces an empty
+Array; omitting the argument is an error. Registration also happens when the
+caller discards the result.
+
+This browser backend does not load a Windows font DLL or install fonts in the
+operating system. The existing `System.addFont` plugin interface continues to
+return a face count.
+
 ## Cell height and baseline
 
 Some callers allocate a temporary Layer of `font.getTextHeight(text)` pixels
