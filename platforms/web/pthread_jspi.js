@@ -19,6 +19,9 @@ addToLibrary({
       LibraryManager.library.$getWasmTableEntry,
   $krkr2GetWasmTableEntryOriginal__deps:
       LibraryManager.library.$getWasmTableEntry__deps,
+  $krkr2CheckMailboxOriginal: LibraryManager.library.$checkMailbox,
+  $krkr2CheckMailboxOriginal__deps:
+      LibraryManager.library.$checkMailbox__deps,
 
   // A suspended promising export does not make a later, synchronous JS ->
   // Wasm callback suspendable. Keep that distinction at the actual SDK entry
@@ -250,6 +253,17 @@ addToLibrary({
         }
       });
     },
+  },
+
+  // The SDK guards exited pthreads, but the browser main thread still has a
+  // pthread_self after the Host discards this instance. A previously queued
+  // waitAsync/postMessage notification must not run proxy tasks in its heap
+  // after terminateAllThreads and Module/VLFS cleanup. Keep live SDK mailbox
+  // processing intact, including its thread-exit checks and error handling.
+  $checkMailbox__deps: ['$krkr2CheckMailboxOriginal', '$krkr2PthreadJspi'],
+  $checkMailbox: () => {
+    if (krkr2PthreadJspi.stopped) return;
+    return krkr2CheckMailboxOriginal();
   },
 
   $spawnThread__deps: ['$krkr2PthreadJspi'],

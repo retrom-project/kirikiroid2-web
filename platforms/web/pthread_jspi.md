@@ -34,6 +34,15 @@ Worker 构造、模块加载或 `run` 消息发送失败时，撤销 JS 线程�
 并返回 `EAGAIN`。模块加载完成后的运行错误继续由 SDK 原有错误处理器处理。
 关闭 runtime 时也会终止尚未完成初始化的预留 Worker，释放其等待者。
 
+`terminateAllThreads()` 还会关闭该实例的浏览器邮箱入口。SDK 的 `checkMailbox`
+只检查当前线程是否退出，浏览器主线程在宿主释放实例后仍有 `pthread_self`；此前
+排队的 `Atomics.waitAsync` 或 `postMessage` 通知因此可能继续执行旧的代理请求。
+适配保留并调用 SDK 原实现，仅在实例终止后忽略后续邮箱通知，避免访问已经释放
+的 Module/VLFS。宿主仍须先暂停并排空活动 JSPI 调用，再终止线程并清理全局对象。
+构建还须把 `PThread` 列入 `EXPORTED_RUNTIME_METHODS`，让宿主通过
+`Module.PThread.terminateAllThreads()` 实际到达此生命周期入口。仅保留 SDK 的
+私有变量不能满足这个边界；发行资产检查同时验证其 Module 导出。
+
 Emscripten 6.0.9 `system/lib/pthread/pthread_create.c` 的失败分支会重置输出句柄、
 撤销线程链表和计数，但没有释放新线程块。`pthread_jspi.c` 用链接器 `--wrap`
 覆盖 `pthread_create`、`__pthread_create` 和 `emscripten_builtin_pthread_create`

@@ -568,6 +568,8 @@ struct WindowEx {
     }
 
     // property minimized
+    // Mobile reference windows report no minimized state. A Web virtual window
+    // likewise cannot minimize the containing native browser window.
     static bool isMinimized(iTJSDispatch2 *obj) { return false; }
 
     static tjs_error getMinimized(tTJSVariant *r, tjs_int n, tTJSVariant **p,
@@ -579,6 +581,7 @@ struct WindowEx {
 
     static tjs_error setMinimized(tTJSVariant *r, tjs_int n, tTJSVariant **p,
                                   iTJSDispatch2 *obj) {
+        (void)(*p)->AsInteger();
         return TJS_S_OK;
     }
 
@@ -1101,12 +1104,13 @@ NCB_ATTACH_CLASS_WITH_HOOK(WindowEx, Window) {
     RawCallback(TJS_W("maximized"), &Class::getMaximized,
                 &Class::setMaximized, 0);
 #endif
+    RawCallback(TJS_W("minimized"), &Class::getMinimized,
+                &Class::setMinimized, 0);
     // RawCallback(TJS_W("maximizeBox"), &Class::getMaximizeBox,
     // &Class::setMaximizeBox, 0); RawCallback(TJS_W("minimizeBox"),
     // &Class::getMinimizeBox,      &Class::setMinimizeBox, 0);
     // RawCallback(TJS_W("maximized"),           &Class::getMaximized,
-    // &Class::setMaximized, 0); RawCallback(TJS_W("minimized"),
-    // &Class::getMinimized,      &Class::setMinimized, 0);
+    // &Class::setMaximized, 0);
     RawCallback(TJS_W("showRestore"), &Class::showRestore, 0);
     RawCallback(TJS_W("resetWindowIcon"), &Class::resetWindowIcon, 0);
     RawCallback(TJS_W("setWindowIcon"), &Class::setWindowIcon, 0);

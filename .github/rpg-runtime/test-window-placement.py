@@ -12,6 +12,8 @@ source = (ROOT / "cpp/plugins/windowEx.cpp").read_text()
 source = re.sub(r"//[^\n]*|/\*[\s\S]*?\*/", "", source)
 assert re.search(r'RawCallback\(TJS_W\("maximized"\),\s*&Class::getMaximized,\s*&Class::setMaximized', source), \
     "Window.maximized must be registered as a readable and writable property"
+assert re.search(r'RawCallback\(TJS_W\("minimized"\),\s*&Class::getMinimized,\s*&Class::setMinimized', source), \
+    "Window.minimized must be registered as a readable and writable property"
 scratch_root = ROOT / "out/window-placement-validation"
 scratch_root.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(dir=scratch_root) as directory:

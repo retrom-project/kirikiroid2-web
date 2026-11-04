@@ -76,7 +76,10 @@ def main() -> int:
         "krkr2StopMainLoop",
         "krkr2_host_bookmark_is_ready", "krkr2_host_save_bookmark",
         "krkr2_host_load_bookmark", "krkr2_host_load_bookmark_state",
-    )):
+    )) or re.search(
+        r'''Module\s*(?:\[\s*["']PThread["']\s*\]|\.\s*PThread)\s*=\s*PThread\b''',
+        javascript,
+    ) is None:
         raise SystemExit("RPG_RUNTIME_RELEASE_BRIDGE_INVALID")
 
     vlfs = paths["vlfs.js"].read_text(encoding="utf-8")

@@ -15,6 +15,7 @@ MARKERS = (
     "krkr2_host_flush_game_saves krkr2_host_finalize_native_exit onNativeExitRequested "
     "krkr2StopMainLoop krkr2_host_bookmark_is_ready krkr2_host_save_bookmark "
     "krkr2_host_load_bookmark krkr2_host_load_bookmark_state"
+    ' Module["PThread"]=PThread;'
 )
 
 
@@ -49,6 +50,16 @@ class ReleaseAssetsTest(unittest.TestCase):
         original = manifest.read_bytes()
         self.assertEqual(self.check_bundle(), 0)
         self.assertEqual(manifest.read_bytes(), original)
+
+    def test_thread_owner_must_be_exported_to_the_host(self):
+        path = self.output / "index.js"
+        javascript = path.read_text().replace('Module["PThread"]=PThread;', '')
+        # A private SDK declaration still leaves Host cleanup unreachable.
+        javascript += '\nvar PThread={terminateAllThreads(){}};'
+        path.write_text(javascript)
+        result = subprocess.run(self.command, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"RPG_RUNTIME_RELEASE_BRIDGE_INVALID", result.stderr)
 
     def test_changed_payload_fails_even_if_structure_still_passes(self):
         metadata = json.loads((self.output / "rpg-runtime-release.json").read_text())
