@@ -15,6 +15,7 @@ function setup() {
   const workers = [];
   const failures = [];
   const table = new Map();
+  const mailboxTasks = [];
   const fatal = () => { throw new Error('runtime thread error'); };
   const pthread = {
     unusedWorkers: [], pthreads: {},
@@ -59,6 +60,10 @@ function setup() {
         ? context.Asyncify.makeAsyncFunction(original) : original;
     },
     $getWasmTableEntry__deps: [],
+    $checkMailbox() {
+      while (mailboxTasks.length) mailboxTasks.shift()();
+    },
+    $checkMailbox__deps: [],
     $spawnThread(params) {
       const worker = pthread.unusedWorkers.pop();
       assert.ok(worker.krkr2Ready, 'SDK must only receive a loaded worker');
@@ -107,7 +112,7 @@ function setup() {
     callerState = ptr + 999;
     return lib.__pthread_create_js(ptr, 0, 123, 456);
   };
-  return {context, pthread, lib, workers, failures, create, fatal, table,
+  return {context, pthread, lib, workers, failures, create, fatal, table, mailboxTasks,
           suspensions: () => suspensions,
           failAllocation: () => { failAllocation = true; }};
 }
@@ -209,6 +214,29 @@ for (const kind of ['constructor', 'error', 'messageerror', 'rejection', 'run'])
   await Promise.resolve();
   assert.equal(Object.keys(s.pthread.pthreads).length, 0);
   assert.equal(s.create(300), 6);
+}
+// A waitAsync/postMessage mailbox notification can already be queued when the
+// Host terminates workers and releases VLFS. It must not run a stale proxy task
+// against that discarded instance, while live mailbox work remains untouched.
+{
+  const s = setup();
+  let seeks = 0;
+  s.context.VLFS = {seek: () => { ++seeks; }};
+  const seek = () => s.context.VLFS.seek();
+  s.mailboxTasks.push(seek);
+  s.context.checkMailbox();
+  assert.equal(seeks, 1);
+  const expected = new Error('live mailbox failure');
+  s.mailboxTasks.push(() => { throw expected; });
+  assert.throws(s.context.checkMailbox, error => error === expected);
+
+  s.mailboxTasks.push(seek);
+  const notification = Promise.resolve().then(s.context.checkMailbox);
+  s.pthread.terminateAllThreads();
+  delete s.context.VLFS;
+  await notification;
+  assert.equal(seeks, 1, 'terminated workers cannot access released VLFS');
+  assert.equal(s.mailboxTasks.length, 1, 'discard the heap without reentering it');
 }
 // An exited pthread has relinquished its stack. Keep checks on live threads,
 // but never read cookies after a joiner can have freed/reused the stack.

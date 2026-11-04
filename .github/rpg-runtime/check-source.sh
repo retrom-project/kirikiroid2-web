@@ -14,6 +14,8 @@ python3 .github/rpg-runtime/test-font-discovery.py
 python3 .github/rpg-runtime/test-font-baseline.py
 python3 .github/rpg-runtime/test-font-cell-height.py
 python3 .github/rpg-runtime/test-window-presentation.py
+python3 .github/rpg-runtime/test-render-flip.py
+python3 .github/rpg-runtime/test-layered-window.py
 python3 .github/rpg-runtime/test-sqlite.py
 node tests/web/sqlite_vlfs_publish.test.mjs
 python3 .github/rpg-runtime/test-pthread-futex.py

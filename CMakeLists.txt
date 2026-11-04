@@ -148,7 +148,9 @@ elseif(WEB)
         "$<$<NOT:$<CONFIG:Debug>>:SHELL:-s STACK_OVERFLOW_CHECK=0>"
         "$<$<CONFIG:Debug>:SHELL:-s ASSERTIONS=2>"
         "SHELL:-s FORCE_FILESYSTEM=1"
-        "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
+        # Host disposal drains JSPI before terminating all instance workers.
+        # The SDK's private PThread variable is not exposed on Module by default.
+        "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap','PThread']"
         # Emscripten 6.0.9 makes the pthread script override opt-in. Preserve its
         # default incoming API and accept the host's verified Blob script URL
         # in both Debug and Release instead of ignoring it without assertions.

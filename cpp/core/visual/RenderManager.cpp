@@ -7,6 +7,7 @@ typedef cocos2d::Texture2D::PixelFormat CCPixelFormat;
 #include "tvpgl.h"
 #include <assert.h>
 #include <algorithm>
+#include <memory>
 #include "ThreadIntf.h"
 #include "argb.h"
 #ifndef KRKR2_NO_FFMPEG
@@ -1654,6 +1655,16 @@ public:
                   iTVPTexture2D *_dst, const tTVPRect &rcdst,
                   iTVPTexture2D *_src, const tTVPRect &rcsrc,
                   iTVPTexture2D *rule, const tTVPRect &rcrule) override {
+        // The reference software loop overwrites unread rows on a self flip.
+        // Web's CPU-readable renderer needs the same source separation as the
+        // OpenGL path; retain the original row-copy order below.
+        auto release = [](iTVPTexture2D *texture) { texture->Release(); };
+        std::unique_ptr<iTVPTexture2D, decltype(release)> sourceCopy(nullptr, release);
+        if(_src == _dst && rcsrc.top > rcsrc.bottom) {
+            sourceCopy.reset(new tTVPSoftwareTexture2D(
+                _src, _src->GetWidth(), _src->GetHeight()));
+            _src = sourceCopy.get();
+        }
         int pixelsize = _tar->GetFormat() == TVPTextureFormat::Gray
             ? sizeof(tjs_uint8)
             : sizeof(tjs_uint32);
