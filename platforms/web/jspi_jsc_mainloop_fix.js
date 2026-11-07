@@ -193,6 +193,9 @@ addToLibrary({
 
     var resumeCurrentOpenALContext = (event) => {
       if (!event.isTrusted) return;
+      // A host pause suspends the device on purpose (alcDevicePauseSOFT);
+      // only alcDeviceResumeSOFT may resume it.
+      if (AL.paused) return;
       var audioContext = AL.currentCtx?.audioCtx;
       if (!audioContext || audioContext.state !== 'suspended') return;
       var promise = audioContext.resume();
