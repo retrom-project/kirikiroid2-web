@@ -26,6 +26,61 @@ namespace TJS {
     const tjs_uint32 globalsearch = (tjs_uint32)(((tjs_uint32)1) << 31);
     const tjs_uint32 tjsflagsmask = (tjs_uint32)0xff000000;
 
+
+    //---------------------------------------------------------------------------
+    // Compatibility with the original Windows engine (not present in the
+    // Kirikiroid2 references, which fail the same way): its wide-character
+    // regex treats "\\xHH" as code point U+00HH, while Oniguruma's UTF-16
+    // encoding treats it as a crude byte, and a lone byte is an incomplete
+    // character. Only a pattern rejected for that reason is rewritten to
+    // "\\x{HH}" and compiled once more; other patterns compile unchanged.
+    static bool TJSIsHexDigit(tjs_char ch) {
+        return (ch >= TJS_W('0') && ch <= TJS_W('9')) ||
+            (ch >= TJS_W('a') && ch <= TJS_W('f')) ||
+            (ch >= TJS_W('A') && ch <= TJS_W('F'));
+    }
+
+    static bool TJSCodePointHexEscapes(const tjs_char *start,
+                                       const tjs_char *end, ttstr &out) {
+        bool changed = false;
+        for(const tjs_char *p = start; p < end; p++) {
+            if(*p != TJS_W('\\') || p + 1 >= end) {
+                out += *p;
+                continue;
+            }
+            if(p[1] == TJS_W('x') && end - p >= 4 &&
+               TJSIsHexDigit(p[2]) && TJSIsHexDigit(p[3])) {
+                out += TJS_W("\\x{");
+                out += p[2];
+                out += p[3];
+                out += TJS_W('}');
+                p += 3;
+                changed = true;
+                continue;
+            }
+            out += p[0];
+            out += p[1];
+            p++;
+        }
+        return changed;
+    }
+
+    static int TJSNewRegex(OnigRegex *regex, const tjs_char *start,
+                           const tjs_char *end, OnigOptionType options,
+                           OnigErrorInfo *einfo) {
+        int r = onig_new(regex, (UChar *)start, (UChar *)end, options,
+                         ONIG_ENCODING_UTF16_LE, ONIG_SYNTAX_PERL, einfo);
+        if(r != ONIGERR_TOO_SHORT_MULTI_BYTE_STRING) return r;
+        ttstr pattern;
+        if(!TJSCodePointHexEscapes(start, end, pattern)) return r;
+        OnigErrorInfo retry;
+        const tjs_char *p = pattern.c_str();
+        if(onig_new(regex, (UChar *)p, (UChar *)(p + pattern.GetLen()), options,
+                    ONIG_ENCODING_UTF16_LE, ONIG_SYNTAX_PERL, &retry) == ONIG_NORMAL)
+            return ONIG_NORMAL;
+        *regex = nullptr;
+        return r;
+    }
     //---------------------------------------------------------------------------
     static tjs_uint32 TJSRegExpFlagToValue(tjs_char ch, tjs_uint32 prev) {
         // converts flag letter to internal flag value.
@@ -301,10 +356,9 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/ _compile) {
             _this->RegEx = nullptr;
         }
         OnigErrorInfo einfo;
-        int r = onig_new(&(_this->RegEx), (UChar *)exprstart,
-                         (UChar *)(expr.c_str() + expr.length()),
-                         flags & ((ONIG_OPTION_MAXBIT << 1) - 1),
-                         ONIG_ENCODING_UTF16_LE, ONIG_SYNTAX_PERL, &einfo);
+        int r = TJSNewRegex(&(_this->RegEx), exprstart,
+                            expr.c_str() + expr.length(),
+                            flags & ((ONIG_OPTION_MAXBIT << 1) - 1), &einfo);
         if(r) {
             char s[ONIG_MAX_ERROR_MESSAGE_LEN];
             onig_error_code_to_str((UChar *)s, r, &einfo);
@@ -644,10 +698,9 @@ void tTJSNC_RegExp::Compile(tjs_int numparams, tTJSVariant **param,
         _this->RegEx = nullptr;
     }
     OnigErrorInfo einfo;
-    int r = onig_new(&(_this->RegEx), (UChar *)expr.c_str(),
-                     (UChar *)(expr.c_str() + expr.length()),
-                     flags & ((ONIG_OPTION_MAXBIT << 1) - 1),
-                     ONIG_ENCODING_UTF16_LE, ONIG_SYNTAX_PERL, &einfo);
+    int r = TJSNewRegex(&(_this->RegEx), expr.c_str(),
+                        expr.c_str() + expr.length(),
+                        flags & ((ONIG_OPTION_MAXBIT << 1) - 1), &einfo);
     if(r) {
         char s[ONIG_MAX_ERROR_MESSAGE_LEN];
         onig_error_code_to_str((UChar *)s, r, &einfo);
