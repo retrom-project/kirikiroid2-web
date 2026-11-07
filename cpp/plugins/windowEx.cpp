@@ -806,8 +806,9 @@ struct WindowEx {
     // ネイティブインスタンスの生成・破棄にあわせてレシーバを登録・解除する
     WindowEx(iTJSDispatch2 *obj) :
         self(obj), menuex(0), sysMenuModified(0), sysMenuModMap(0),
+        cachedHWND(GetHWND(obj)), sysMenu(0), externalIcon(0),
         disableResize(false), disableMove(false), enableNCMEvent(false),
-        enableWinMsgHook(false) {
+        enableWinMsgHook(false), ovbmp(0) {
         regist(true);
         setMessageHookAll(false);
     }
