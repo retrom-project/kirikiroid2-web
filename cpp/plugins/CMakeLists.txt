@@ -31,7 +31,8 @@ target_sources(${PROJECT_NAME} PRIVATE ${_PLUGIN_SOURCES})
 if(EMSCRIPTEN)
     find_package(unofficial-sqlite3 CONFIG REQUIRED)
     target_sources(${PROJECT_NAME} PRIVATE
-        sqlite/Sqlite.cpp steam/SteamWeb.cpp GamepadWeb.cpp LayeredWindowWeb.cpp)
+        sqlite/Sqlite.cpp steam/SteamWeb.cpp GamepadWeb.cpp LayeredWindowWeb.cpp
+        GlitchEffect.cpp)
     target_link_libraries(${PROJECT_NAME} PRIVATE unofficial::sqlite3::sqlite3)
 endif()
 
