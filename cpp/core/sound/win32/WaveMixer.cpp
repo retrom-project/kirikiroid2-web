@@ -773,6 +773,21 @@ public:
     }
 
     ALCcontext *GetContext() { return _context; }
+
+#ifdef __EMSCRIPTEN__
+    // Web host pause boundary (ALC_SOFT_pause_device): suspends the browser
+    // AudioContext and its scheduling timer, so every stream stops regardless
+    // of which thread is still refilling its queue.
+    void SetDevicePaused(bool paused) {
+        if(!_device)
+            return;
+        using PauseFn = void (*)(ALCdevice *);
+        auto fn = reinterpret_cast<PauseFn>(alcGetProcAddress(
+            _device, paused ? "alcDevicePauseSOFT" : "alcDeviceResumeSOFT"));
+        if(fn)
+            fn(_device);
+    }
+#endif
 };
 
 void tTVPSoundBufferAL::checkerr(const char *funcname) {
@@ -812,6 +827,15 @@ void TVPInitDirectSound(int freq) {
     }
     // TVPInitSoundOptions();
 }
+
+#ifdef __EMSCRIPTEN__
+// The Web build always creates tTVPAudioRendererAL (no Oboe/SDL renderer).
+void TVPWebSetAudioDevicePaused(bool paused) {
+    if(TVPAudioRenderer)
+        static_cast<tTVPAudioRendererAL *>(TVPAudioRenderer)
+            ->SetDevicePaused(paused);
+}
+#endif
 
 void TVPUninitDirectSound() {
     // nothing to do

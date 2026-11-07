@@ -120,8 +120,15 @@ CDVDVideoCodec *CDVDFactoryCodec::CreateVideoCodec(CDVDStreamInfo &hint,
             return pCodec;
     }
 
-    // try to decide if we want to try halfres decoding
-#if !defined(TARGET_POSIX) && !defined(TARGET_WINDOWS)
+    // try to decide if we want to try halfres decoding.
+    // Web platform deviation (see analysis/movie-lowres-web-deviation.md): all
+    // four references request lowres here, but VideoOverlay sizes its layers
+    // and frame textures from the stream's nominal dimensions while
+    // AddVideoPicture/GetFrontBuffer copy only the decoded size, so a
+    // half-resolution frame fills just the top-left quarter of the movie
+    // layer.  The Web build decodes at full resolution instead.
+#if !defined(TARGET_POSIX) && !defined(TARGET_WINDOWS) &&                      \
+    !defined(__EMSCRIPTEN__)
     // There is deliberately no fpsscale guard and the comparison is strict.
     // A nonzero numerator divided by zero reaches the lowres branch as +inf;
     // zero divided by zero produces NaN and does not pass the comparison.

@@ -219,6 +219,23 @@ BasePlayer::BasePlayer(CBaseRenderer *renderer) :
     m_streamPlayerSpeed = DVD_PLAYSPEED_NORMAL;
     m_caching = CACHESTATE_DONE;
     memset(&m_SpeedState, 0, sizeof(m_SpeedState));
+#ifdef __EMSCRIPTEN__
+    // Web platform boundary: the four references never register a player
+    // here.  A browser host pause stops only the main loop, while the demux
+    // and audio threads keep playing the movie.  Register so the host pause
+    // hook can hold the movie clock and speed; the destructor's existing
+    // unregister ends the registration.
+    ::Application->RegisterActiveEvent(
+        this, [](void *host, eTVPActiveEvent ev) {
+            BasePlayer *player = static_cast<BasePlayer *>(host);
+            if(ev == eTVPActiveEvent::onDeactive) {
+                player->OnDeactive();
+                player->Pause();
+            } else {
+                player->OnActive();
+            }
+        });
+#endif
 }
 
 BasePlayer::~BasePlayer() {

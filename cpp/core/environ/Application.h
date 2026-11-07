@@ -195,6 +195,12 @@ public:
                              const std::function<void(void *, eTVPActiveEvent)>
                                  &func /*empty = unregister*/);
 
+#ifdef __EMSCRIPTEN__
+    // Web host pause boundary: notify only the registered active-event hosts,
+    // without the activation side effects (compact, sound mixer, TJS events).
+    void NotifyHostActiveEvent(eTVPActiveEvent ev);
+#endif
+
 private:
     std::mutex m_msgQueueLock;
 

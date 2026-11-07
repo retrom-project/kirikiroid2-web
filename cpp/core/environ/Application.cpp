@@ -21,6 +21,7 @@
 #include "Exception.h"
 #ifdef __EMSCRIPTEN__
 #include "web/HostNativeExit.h"
+#include <emscripten.h>
 #endif
 // #include "Resource.h"
 #include "SystemControl.h"
@@ -896,6 +897,31 @@ void tTVPApplication::RegisterActiveEvent(
     else
         m_activeEvents.erase(host);
 }
+
+#ifdef __EMSCRIPTEN__
+void tTVPApplication::NotifyHostActiveEvent(eTVPActiveEvent ev) {
+    for(auto &it : m_activeEvents) {
+        it.second(it.first, ev);
+    }
+}
+
+void TVPWebSetAudioDevicePaused(bool paused);
+
+// Called by the browser host after the paused main loop has drained, and
+// before it schedules the next frame on resume.  Movies are held first so
+// their clocks stop before the audio device does; resume restores in reverse.
+extern "C" EMSCRIPTEN_KEEPALIVE void krkr2_host_set_paused(int paused) {
+    if(::Application == nullptr)
+        return;
+    if(paused) {
+        ::Application->NotifyHostActiveEvent(eTVPActiveEvent::onDeactive);
+        TVPWebSetAudioDevicePaused(true);
+    } else {
+        TVPWebSetAudioDevicePaused(false);
+        ::Application->NotifyHostActiveEvent(eTVPActiveEvent::onActive);
+    }
+}
+#endif
 
 #if 0
 std::vector<std::string>* LoadLinesFromFile( const std::wstring& path ) {
