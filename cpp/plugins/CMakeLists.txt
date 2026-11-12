@@ -56,6 +56,8 @@ set(_KRKR2_NCBIND_SOURCES
     layerExBTOA.cpp
     layerExSave.cpp
     layerExRaster.cpp
+    gfxEffect.cpp
+    gfx/GfxFire.cpp
     PackinOne.cpp
     datapack/DataPack.cpp
     datapack/Reader.cpp

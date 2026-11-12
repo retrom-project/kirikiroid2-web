@@ -12071,6 +12071,18 @@ TEST_CASE("blink RNG can regenerate between one canonical draw's words") {
     REQUIRE(rng.cursor == rng.mt + 1);
 }
 
+TEST_CASE("gfxFire shares the native MT owner and consumes one word per unit draw") {
+    motion::EmoteBlinkMt19937 rng(5489u);
+    REQUIRE(motion::EmoteBlinkRng_nextUnit32_guess(&rng) == 3499211612.0 / 4294967296.0);
+    REQUIRE(rng.cursor == rng.mt + 1);
+    REQUIRE(rng.left == 624);
+    REQUIRE(motion::EmoteBlinkRng_nextUnit32_guess(&rng) == 581869302.0 / 4294967296.0);
+    REQUIRE(motion::EmoteBlinkRng_nextCanonical_guess(&rng) ==
+            Catch::Approx(0.19518461779778873).epsilon(1e-15));
+    REQUIRE(motion::EmoteBlinkRng_nextUnit32_guess(&rng) == 545404204.0 / 4294967296.0);
+    REQUIRE(rng.cursor == rng.mt + 5);
+}
+
 TEST_CASE("bust builder preserves sparse refs and nested spring state") {
     const auto makeDictionary = [] {
         iTJSDispatch2 *dispatch = TJSCreateDictionaryObject();

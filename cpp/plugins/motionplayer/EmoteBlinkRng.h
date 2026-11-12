@@ -1,4 +1,4 @@
-// Global blink/wind random source reconstructed from all four 1.3.9
+// Global blink/wind/fire random source reconstructed from all four 1.3.9
 // references. Platform addresses and native object layouts live in analysis/.
 //
 // CLAUDE.md hard rule: faithfully port the binary's RNG algorithm (MT19937 +
@@ -38,5 +38,8 @@ namespace motion {
     // Consumes two MT words and returns the reference canonical double in
     // [0,1).
     double EmoteBlinkRng_nextCanonical_guess(EmoteBlinkMt19937* self);
+
+    // gfxFire consumes one shared MT word for the native [0,1) real2 draw.
+    double EmoteBlinkRng_nextUnit32_guess(EmoteBlinkMt19937* self);
 
 } // namespace motion
