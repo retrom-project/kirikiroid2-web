@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="kirikiri-native-exit-") as directory:
         ], check=True)
         subprocess.run([str(executable)], check=True)
     for name in ("ScriptMgnIntf.h", "base/CCDirector.h", "base/CCScheduler.h", "tjsObject.h",
-                 "tjsCommHead.h", "SysInitIntf.h", "emscripten.h", "LayerIntf.h", "LayerBitmapIntf.h"):
+                 "tjsCommHead.h", "SysInitIntf.h", "emscripten.h", "LayerIntf.h", "LayerBitmapIntf.h", "WindowImpl.h"):
         header = scratch / name
         header.parent.mkdir(parents=True, exist_ok=True)
         header.touch()
@@ -52,6 +52,6 @@ with tempfile.TemporaryDirectory(prefix="kirikiri-native-exit-") as directory:
         "-I", str(scratch), "-I", str(ROOT),
         str(ROOT / "tests/web/host_native_exit.test.cpp"), "-o", str(coordinator),
     ], check=True)
-    for mode in ("normal", "invalidated", "failed-flush", "nonzero"):
+    for mode in ("normal", "invalidated", "failed-flush", "nonzero", "host-close"):
         subprocess.run([str(coordinator), mode], check=True)
 print("Web exit defers native teardown; desktop exit remains unchanged")

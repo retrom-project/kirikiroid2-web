@@ -198,6 +198,17 @@ bool TVPStartupSuccess = false;
 bool testLoopRegistered = false;
 bool testLoopPending = false;
 bool testLoopStopping = false;
+struct tTJSNI_Window {};
+tTJSNI_Window *TVPMainWindow = nullptr;
+struct tTVPOnCloseInputEvent {
+    tTJSNI_Window *window;
+    explicit tTVPOnCloseInputEvent(tTJSNI_Window *value) : window(value) {}
+};
+std::vector<tTJSNI_Window *> testWindowCloseRequests;
+void TVPPostInputEvent(tTVPOnCloseInputEvent *event) {
+    testWindowCloseRequests.push_back(event->window);
+    delete event;
+}
 int testSystemShutdowns = 0;
 std::function<void()> testSystemShutdown;
 void TVPSystemUninit() {

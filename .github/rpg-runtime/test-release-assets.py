@@ -12,7 +12,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 MARKERS = (
     "krkr2_host_load_bookmark_is_ready krkr2_host_observe_game_saves onGameSave onGameSaveImage "
-    "krkr2_host_flush_game_saves krkr2_host_finalize_native_exit onNativeExitRequested "
+    "krkr2_host_flush_game_saves krkr2_host_finalize_native_exit krkr2_host_request_exit onNativeExitRequested "
     "krkr2StopMainLoop krkr2_host_bookmark_is_ready krkr2_host_save_bookmark "
     "krkr2_host_load_bookmark krkr2_host_load_bookmark_state"
     ' Module["PThread"]=PThread;'

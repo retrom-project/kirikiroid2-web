@@ -12,6 +12,7 @@
 #include "HostNativeExit.h"
 #include "LayerIntf.h"
 #include "LayerBitmapIntf.h"
+#include "WindowImpl.h"
 
 #include <atomic>
 #include <cstdint>
@@ -1010,6 +1011,22 @@ static int flushNativeSystemData(bool closing) {
 extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_flush_game_saves() {
     if(native_exit_requested) return kBookmarkRejected;
     return flushNativeSystemData(false);
+}
+
+// A Host close has the same veto/confirmation semantics as the native window
+// close button. Deliver through the existing engine input queue after the
+// paused JSPI frame drains; resume ticks so script dialogs can receive input.
+// Dispatch is not acceptance. Only native termination starts final export.
+extern "C" EMSCRIPTEN_KEEPALIVE int krkr2_host_request_exit() {
+    if(!TVPStartupSuccess || native_exit_requested || game_save_depth != 0 ||
+       game_save_flushing || !krkr2_host_main_loop_is_idle() || !TVPMainWindow)
+        return kBookmarkRejected;
+    try {
+        TVPPostInputEvent(new tTVPOnCloseInputEvent(TVPMainWindow));
+        return kBookmarkSucceeded;
+    } catch(...) {
+        return kScriptException;
+    }
 }
 
 // JSPI export: invoked only after the request callback returns and the active

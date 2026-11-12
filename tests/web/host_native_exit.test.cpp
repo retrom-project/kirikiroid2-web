@@ -4,6 +4,23 @@
 
 int main(int argc, char **argv) {
     const std::string mode = argc > 1 ? argv[1] : "normal";
+    if(mode == "host-close") {
+        tTJSNI_Window window;
+        TVPMainWindow = &window;
+        assert(krkr2_host_request_exit() < 0);
+        testLoopRegistered = TVPStartupSuccess = true;
+        testLoopPending = true;
+        assert(krkr2_host_request_exit() < 0 && testWindowCloseRequests.empty());
+        testLoopPending = false;
+        assert(krkr2_host_request_exit() == 0);
+        assert(testWindowCloseRequests == std::vector<tTJSNI_Window *>{&window});
+        // Dispatching is not acceptance: script may display a confirmation or
+        // refuse. Neither final export nor teardown is allowed at this point.
+        assert(testNativeExitStatuses.empty() && testSystemShutdowns == 0);
+        TVPMainWindow = nullptr;
+        assert(krkr2_host_request_exit() < 0);
+        return 0;
+    }
     iTJSDispatch2 global, kag, native, flush;
     native.function = flush.function = true;
     testGlobal = &global;

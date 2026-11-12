@@ -6,6 +6,7 @@ python3 -m unittest discover -s tools/xp3 -p 'test_*.py'
 python3 .github/rpg-runtime/test-bookmark-bridge.py
 python3 .github/rpg-runtime/test-game-save-observer.py
 python3 .github/rpg-runtime/test-native-exit.py
+python3 .github/rpg-runtime/test-web-write-cache.py
 node tests/web/host_game_save_notification.test.mjs
 python3 .github/rpg-runtime/test-display-monitors.py
 python3 .github/rpg-runtime/test-window-placement.py
