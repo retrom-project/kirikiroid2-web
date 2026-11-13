@@ -13,6 +13,7 @@ node --check platforms/web/confirm-dialog.js
 python3 .github/rpg-runtime/test-display-monitors.py
 python3 .github/rpg-runtime/test-window-placement.py
 python3 .github/rpg-runtime/test-plugin-module-name.py
+python3 .github/rpg-runtime/test-web-psb-header.py
 python3 .github/rpg-runtime/test-font-candidates.py
 python3 .github/rpg-runtime/test-font-discovery.py
 python3 .github/rpg-runtime/test-font-baseline.py

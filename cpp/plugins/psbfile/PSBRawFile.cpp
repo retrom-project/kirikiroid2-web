@@ -12,6 +12,10 @@
 #include "StorageIntf.h"
 #include "tjsUtils.h"
 
+#ifdef __EMSCRIPTEN__
+#include "../../core/environ/web/WebPsbHeader.h"
+#endif
+
 namespace PSB {
     namespace {
         constexpr std::uint32_t PSB_SIGNATURE = 0x00425350u;
@@ -523,6 +527,9 @@ namespace PSB {
            detail::ReadUnaligned_guess<std::uint32_t>(data) != PSB_SIGNATURE) {
             return false;
         }
+#ifdef __EMSCRIPTEN__
+        if(!filter && !TVPWebDecodePsbHeader(data, size)) return false;
+#endif
         {
             PSBFile replacement;
             replacement.owner_ = new PSBRawOwner(data, size);
