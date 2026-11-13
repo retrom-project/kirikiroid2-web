@@ -97,6 +97,10 @@
       ],
       "platform": "emscripten"
     },
+    {
+      "name": "toml11",
+      "platform": "emscripten"
+    },
     "uchardet",
     "unrar",
     {

@@ -63,6 +63,23 @@ participate in the same lookup. Resources absent from the layer retain native
 archive/directory resolution. The layer does not replace whole base archives,
 execute a native patch loader or infer a directory from game identity.
 
+## TOML decoding
+
+The Web `toml.dll` module exposes `Scripts.tomlDecodeFromStorage(name[, mode])`
+and `Scripts.tomlDecodeFromString(text[, diagnosticName])`. Storage input uses
+the ordinary TVP text reader, including archive access, ciphered text, BOMs and
+the optional read mode. It is parsed as TOML 1.0 through the pinned toml11
+dependency. Tables and arrays become native TJS Dictionary and Array objects;
+booleans become integer 0/1, integers remain 64-bit, and strings preserve Unicode.
+Parse/open failure clears the result and logs the diagnostic before returning
+the native failure status. No game script or table is rewritten.
+
+The decode boundary retains the supplied plugin's empty-key void/null/octet
+envelopes and unsupported date/time behavior. It does not expose `tomlEncode`
+or interpret that encoder's private floating-point comments; comments have
+ordinary TOML semantics. See the
+[four-reference and supplied-plugin analysis](../analysis/web-toml-decode-four-reference.md).
+
 ## Window presentation
 
 Web `Window.registerHotKey(id[, key[, shift]])` registers a shortcut on that
