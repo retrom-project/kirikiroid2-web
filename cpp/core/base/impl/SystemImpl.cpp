@@ -710,6 +710,25 @@ tTJSNativeClass *TVPCreateNativeClass_System() {
     TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(
         /*object to register*/ cls,
         /*func. name*/ inform)
+#ifdef __EMSCRIPTEN__
+    // Browser confirmation is an explicit Web API; native window ownership
+    // cannot be represented here. Reuse the interactive platform dialog.
+    TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/ confirm) {
+        if(numparams < 1)
+            return TJS_E_BADPARAMCOUNT;
+
+        ttstr text = *param[0];
+        ttstr caption = numparams >= 2 && param[1]->Type() != tvtVoid
+            ? ttstr(*param[1]) : ttstr(TJS_W("Information"));
+        const int selected = TVPShowSimpleMessageBoxYesNo(text, caption);
+        if(result)
+            *result = tTJSVariant(static_cast<tjs_int>(selected == 0));
+        return TJS_S_OK;
+    }
+    TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(
+        /*object to register*/ cls,
+        /*func. name*/ confirm)
+#endif
     //----------------------------------------------------------------------
     TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/ getTickCount) {
         if(result) {

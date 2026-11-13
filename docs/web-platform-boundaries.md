@@ -31,6 +31,16 @@ and [CommCtrl.h](https://github.com/microsoft/win32metadata/blob/64ed9177fb76eb2
 The model constructor retains its event target, and `initCommonControlsEx`
 returns false because the browser cannot register native Windows controls.
 
+## System confirmation
+
+Web scripts can call `System.confirm(message, caption[, owner])`. The message
+is required; an omitted or void caption uses `Information`. The existing
+interactive browser Yes/No dialog returns true only for Yes and false for No
+or dismissal. It never chooses an answer for the player. A native owner HWND
+cannot be represented, so the runtime frame owns the browser dialog. This is
+an explicit Web addition; the four-reference investigation is recorded in
+[the System confirmation analysis](../analysis/web-system-confirm-four-reference.md).
+
 ## Resource overlays
 
 `_krkr2_host_resource_overlay_abi()` returns 1 when the explicit Web resource
