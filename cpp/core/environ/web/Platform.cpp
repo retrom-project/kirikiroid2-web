@@ -89,8 +89,13 @@ EM_JS(int, web_alert, (const char* msg, const char* title), {
     return 0;
 });
 
-EM_JS(int, web_confirm, (const char* msg, const char* title), {
-    return confirm(UTF8ToString(title) + '\n' + UTF8ToString(msg)) ? 0 : 1;
+// Yield the native stack so the in-document modal can receive input without
+// browser chrome changing fullscreen. The TJS caller still waits for an index.
+EM_ASYNC_JS(int, web_confirm, (const char* msg, const char* title), {
+    if (typeof Module['krkr2ShowConfirm'] !== 'function') {
+        throw new Error('KIRIKIRI_CONFIRM_UNAVAILABLE');
+    }
+    return await Module['krkr2ShowConfirm'](UTF8ToString(msg), UTF8ToString(title));
 });
 
 int TVPShowSimpleMessageBox(const ttstr &text, const ttstr &caption,

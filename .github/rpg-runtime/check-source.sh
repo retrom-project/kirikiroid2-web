@@ -8,6 +8,8 @@ python3 .github/rpg-runtime/test-game-save-observer.py
 python3 .github/rpg-runtime/test-native-exit.py
 python3 .github/rpg-runtime/test-web-write-cache.py
 node tests/web/host_game_save_notification.test.mjs
+node tests/web/web_confirm.test.mjs
+node --check platforms/web/confirm-dialog.js
 python3 .github/rpg-runtime/test-display-monitors.py
 python3 .github/rpg-runtime/test-window-placement.py
 python3 .github/rpg-runtime/test-plugin-module-name.py

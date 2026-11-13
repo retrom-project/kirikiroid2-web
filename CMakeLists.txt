@@ -173,6 +173,7 @@ elseif(WEB)
         "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick','krkr2_host_flush_game_saves','krkr2_host_finalize_native_exit']"
         "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js"
         "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.js"
+        "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/confirm-dialog.js"
         "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-physics.js"
         "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-animation.js"
         "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/cubism-controller.js"

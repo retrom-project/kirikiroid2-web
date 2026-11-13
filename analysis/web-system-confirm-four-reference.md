@@ -59,15 +59,16 @@ check, string conversion, optional-caption handling and Information default.
 It calls `TVPShowSimpleMessageBoxYesNo`, whose existing platform implementation
 constructs Yes/No labels and returns the selected index. Only index zero becomes
 true; No/dismissal becomes false. A supplied owner is accepted, but the browser
-cannot create or own a native HWND, so the browser dialog belongs to the current
+cannot create or own a native HWND, so the in-page dialog belongs to the current
 runtime frame. Non-Web System registrations remain reference-derived.
 
-The existing Web two-button path delegates to the real browser confirmation API.
-The original compiled caller reached this real dialog and continued after
-dismissal, exercising the false branch and the actual worker/main-thread path.
-Its language prompt requests factual attestations; the test does not make those
-attestations. Affirmative-branch coverage is therefore not claimed. Source/build
-success alone is insufficient to establish dialog or project compatibility.
+The Web two-button path now awaits the core-owned HTML dialog through JSPI;
+the native browser confirmation API is not used. See the fresh
+[four-reference UI/wait correspondence](web-confirm-fullscreen-four-reference.md).
+The original compiled caller's language prompt requests factual attestations;
+product verification uses dismissal without making those attestations. Neutral
+UI checks cover both numeric selections separately. Source/build success alone
+is insufficient to establish dialog or project compatibility.
 
 There is no existing public System-dialog runtime fixture in this checkout.
 Per repository rules, no synthetic game or replacement fixture is fabricated;
