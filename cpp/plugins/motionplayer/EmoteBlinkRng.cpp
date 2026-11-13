@@ -1,4 +1,4 @@
-// Shared MT19937 source used by blink controllers and wind emitters.
+// Shared MT19937 source used by blink controllers, wind emitters and gfxFire.
 
 #include "EmoteBlinkRng.h"
 
@@ -109,6 +109,10 @@ namespace motion {
         static_assert(sizeof(double) == sizeof(uint64_t), "");
         __builtin_memcpy(&canonicalPlusOne, &bits, sizeof(double));
         return canonicalPlusOne - 1.0;
+    }
+
+    double EmoteBlinkRng_nextUnit32_guess(EmoteBlinkMt19937* self) {
+        return static_cast<double>(nextWord(self)) * (1.0 / 4294967296.0);
     }
 
 } // namespace motion

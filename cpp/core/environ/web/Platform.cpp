@@ -539,6 +539,10 @@ bool TVPWriteDataToFile(const ttstr &filepath, const void *data,
                 total += n;
             }
             VLFS::Close(fd);
+            // Publishing a buffered Web write changes the namespace without a
+            // native filesystem notification. Refresh cached auto-path lists
+            // before script resolves a newly created file by its basename.
+            TVPClearStorageCaches();
             if (total == len) return true;
             spdlog::error("TVPWriteDataToFile VLFS short write: {}", path);
             return false;

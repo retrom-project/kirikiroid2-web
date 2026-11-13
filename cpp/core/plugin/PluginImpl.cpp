@@ -27,6 +27,9 @@
 #include "tjs.h"
 #include "tjsConfig.h"
 #include "ncbind.hpp"
+#ifdef __EMSCRIPTEN__
+#include "../environ/web/WebPluginModuleName.h"
+#endif
 
 #ifdef TVP_SUPPORT_KPI
 #include "kmp_pi.h"
@@ -41,11 +44,17 @@
 #endif
 
 void TVPLoadPlugin(const ttstr &name) {
+#ifdef __EMSCRIPTEN__
+    const auto module = TVPWebPluginModuleName(
+        std::basic_string<tjs_char>(name.c_str()));
+    (void)ncbAutoRegister::LoadModule(ttstr(module.c_str()));
+#else
     // Autoload and Plugins.link both pass their complete ttstr key directly to
     // the public NCB loader and ignore its bool.  The autoload scanner below
     // has one reference-platform split: iOS rewrites the discovered basename
     // from .tpm to .dll before it is joined to Path; Android retains .tpm.
     (void)ncbAutoRegister::LoadModule(name);
+#endif
 }
 
 //---------------------------------------------------------------------------
