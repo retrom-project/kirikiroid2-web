@@ -160,9 +160,10 @@ for (const rejectTick of [false, true]) {
 await module.krkr2StopMainLoop();
 console.log("JSPI host stop/drain tests passed");
 
-// A content cancellation is expected only after this host began stopping.
+// Content and dialog cancellation are expected only after this host began stopping.
 // Ordinary failures and cancellations already delivered while running remain
 // failures, including when exit follows immediately afterward.
+for (const code of ["CONTENT_IO_ABORTED", "KIRIKIRI_DIALOG_ABORTED"])
 for (const order of ["running", "stop-before-abort", "abort-before-stop", "stop-before-error"]) {
   let rejectTick;
   const tick = new Promise((_resolve, reject) => { rejectTick = reject; });
@@ -185,7 +186,7 @@ for (const order of ["running", "stop-before-abort", "abort-before-stop", "stop-
   loop.func();
   loop.scheduler();
   const error = order === "stop-before-error" ? new Error("real read failure") :
-      Object.assign(new Error("CONTENT_IO_ABORTED"), {code: "CONTENT_IO_ABORTED"});
+      Object.assign(new Error(code), {code});
   let stopping;
   if (order.startsWith("stop-before")) stopping = instance.krkr2StopMainLoop();
   rejectTick(error);

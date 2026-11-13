@@ -31,6 +31,22 @@ and [CommCtrl.h](https://github.com/microsoft/win32metadata/blob/64ed9177fb76eb2
 The model constructor retains its event target, and `initCommonControlsEx`
 returns false because the browser cannot register native Windows controls.
 
+## System confirmation
+
+Web scripts can call `System.confirm(message, caption[, owner])`. The message
+is required; an omitted or void caption uses `Information`. The core draws a
+modal HTML dialog in the runtime frame's top layer, including during fullscreen.
+JSPI suspends the native caller until the player answers: Yes returns true and
+No or dismissal returns false. It never chooses an answer for the player or
+calls the browser's native confirmation API. Long text scrolls above fixed
+buttons; mouse, keyboard and standard gamepad input belong to the dialog until
+the selection is released. Runtime teardown cancels pending dialogs before
+draining the native stack. A native owner HWND cannot be represented.
+This is an explicit Web addition; the four-reference investigation is recorded in
+[the System confirmation analysis](../analysis/web-system-confirm-four-reference.md).
+The waiting and UI boundary is detailed in
+[the fullscreen confirmation analysis](../analysis/web-confirm-fullscreen-four-reference.md).
+
 ## Resource overlays
 
 `_krkr2_host_resource_overlay_abi()` returns 1 when the explicit Web resource

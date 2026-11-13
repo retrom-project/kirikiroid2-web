@@ -52,7 +52,7 @@ addToLibrary({
     // suspended in a content read still owns the Wasm stack and VLFS globals.
     // The host cancels its readers after this synchronous pause, then awaits
     // this drain before releasing those globals. Only the resulting content
-    // cancellation is expected; unrelated failures remain scheduler errors.
+    // or dialog cancellation is expected; unrelated failures remain scheduler errors.
     Module['krkr2StopMainLoop'] = (hostOperation, discardNativeState) => {
       promiseState.stopping = true;
       MainLoop.pause();
@@ -159,7 +159,8 @@ addToLibrary({
           if (error instanceof WebAssembly.RuntimeError) promiseState.nativeFailed = true;
           if (promiseState.pending === pending) promiseState.pending = null;
           if (promiseState.waiting === pending) promiseState.waiting = null;
-          if (!promiseState.stopping || error?.code !== 'CONTENT_IO_ABORTED') {
+          if (!promiseState.stopping ||
+              (error?.code !== 'CONTENT_IO_ABORTED' && error?.code !== 'KIRIKIRI_DIALOG_ABORTED')) {
             handleException(error);
           }
         });
