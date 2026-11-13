@@ -43,6 +43,9 @@
     function notify(value) {
         if (typeof Module['onConfirmDialogChanged'] === 'function') Module['onConfirmDialogChanged'](value);
     }
+    function aborted() {
+        return Object.assign(new Error('Runtime disposed'), {name:'AbortError', code:'KIRIKIRI_DIALOG_ABORTED'});
+    }
     function choose(index) {
         if (!active || active.decision !== null) return;
         active.selected = index;
@@ -174,7 +177,7 @@
     pointerEvents.forEach(function (type) { window.addEventListener(type, pointer, {capture:true, passive:false}); });
     window.addEventListener('blur', blur);
     Module['krkr2ShowConfirm'] = function (message, title) {
-        if (disposed) return Promise.reject(new DOMException('Runtime disposed', 'AbortError'));
+        if (disposed) return Promise.reject(aborted());
         return new Promise(function (resolve, reject) {
             requests.push({message:message, title:title, resolve:resolve, reject:reject}); showNext();
         });
@@ -182,7 +185,7 @@
     Module['krkr2DisposeDialogs'] = function () {
         if (disposed) return;
         disposed = true;
-        var error = new DOMException('Runtime disposed', 'AbortError');
+        var error = aborted();
         requests.splice(0).forEach(function (request) { request.reject(error); });
         if (active) finish(error);
         if (style) style.remove();

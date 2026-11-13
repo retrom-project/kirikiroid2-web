@@ -61,6 +61,10 @@ and a standard gamepad select an answer. Input belongs to the modal until
 controls return to neutral. Teardown dismisses pending UI without fabricating
 an affirmative result. Runtime hooks coordinate its cursor/startup input and
 cancel outstanding dialogs before native teardown drains.
+The dialog rejects with `KIRIKIRI_DIALOG_ABORTED` during teardown. The frame
+scheduler accepts that cancellation only after Host stop has begun, just as it
+owns content-read cancellation; cancellation during ordinary play remains an
+error. The production scheduler regression covers both orderings.
 
 The current Cocos multi-button Web fallback discards its asynchronous callback
 and immediately returns zero; it cannot supply this result-bearing boundary.
