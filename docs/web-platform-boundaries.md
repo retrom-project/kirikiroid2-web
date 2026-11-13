@@ -65,6 +65,22 @@ execute a native patch loader or infer a directory from game identity.
 
 ## Window presentation
 
+Web `Window.registerHotKey(id[, key[, shift]])` registers a shortcut on that
+virtual Window. Omitting `key`, or passing zero, unregisters the ID. IDs range
+from 0 through 0xbfff; the result reports registration/removal success. Virtual
+keys must fit one byte. Shift/Alt/Control use the ordinary TJS shift bits;
+Windows/Meta uses 0x100. Modifiers match exactly. Omitting `shift` permits
+repeated key-downs; supplying it suppresses repeats unless `ssRepeat` is set.
+The callback is `onHotKeyPressed(id, modifiers)` and is queued through the
+ordinary TJS event queue. Replacing an ID updates its binding; an identical
+combination already held by another ID fails. Bindings belong to the native
+Window instance and disappear with it.
+
+The browser supplies events only while the runtime receives keyboard input;
+this does not register background desktop hotkeys or intercept OS-reserved
+shortcuts. Ordinary key events remain available. See the
+[four-reference and supplied-plugin evidence](../analysis/web-window-hotkeys-four-reference.md).
+
 `Window.fullScreen` selects a virtual display area inside the browser surface.
 It does not request browser fullscreen or require a user gesture. Presentation
 fits the primary paint area once, preserves its aspect ratio and centers it.

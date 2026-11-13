@@ -29,6 +29,10 @@
 
 #include "Application.h"
 
+#ifdef __EMSCRIPTEN__
+#include "vkdefine.h"
+#endif
+
 //---------------------------------------------------------------------------
 // Window List
 //---------------------------------------------------------------------------
@@ -487,6 +491,9 @@ void tTJSNI_BaseWindow::OnMouseLeave() {
 void tTJSNI_BaseWindow::OnKeyDown(tjs_uint key, tjs_uint32 shift) {
     if(!CanDeliverEvents())
         return;
+#ifdef __EMSCRIPTEN__
+    PostWebHotKeys(key, shift);
+#endif
     if(Owner) {
         tTJSVariant arg[2] = { (tjs_int)key, (tjs_int)shift };
         static ttstr eventname(TJS_W("onKeyDown"));
@@ -497,6 +504,9 @@ void tTJSNI_BaseWindow::OnKeyDown(tjs_uint key, tjs_uint32 shift) {
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnKeyUp(tjs_uint key, tjs_uint32 shift) {
+#ifdef __EMSCRIPTEN__
+    ReleaseWebHotKey(key);
+#endif
     if(!CanDeliverEvents())
         return;
     if(Owner) {
@@ -507,6 +517,72 @@ void tTJSNI_BaseWindow::OnKeyUp(tjs_uint key, tjs_uint32 shift) {
     if(DrawDevice)
         DrawDevice->OnKeyUp(key, shift);
 }
+#ifdef __EMSCRIPTEN__
+namespace {
+    constexpr tjs_uint32 TVPWebHotKeyWindowsModifier = 0x100;
+    constexpr tjs_uint32 TVPWebHotKeyModifierMask =
+        TVP_SS_SHIFT | TVP_SS_ALT | TVP_SS_CTRL | TVPWebHotKeyWindowsModifier;
+}
+
+bool tTJSNI_BaseWindow::RegisterWebHotKey(tjs_int id, tjs_uint key,
+                                         tjs_uint32 modifiers, bool repeat) {
+    auto existing = std::find_if(WebHotKeys.begin(), WebHotKeys.end(),
+                                 [id](const auto &item) { return item.Id == id; });
+    if(key == 0) {
+        if(existing == WebHotKeys.end())
+            return false;
+        WebHotKeys.erase(existing);
+        return true;
+    }
+    if(key > 0xff)
+        return false;
+    modifiers &= TVPWebHotKeyModifierMask;
+    for(const auto &item : WebHotKeys) {
+        if(item.Id != id && item.Key == key && item.Modifiers == modifiers)
+            return false;
+    }
+    tWebHotKey item{ id, key, modifiers, repeat, false };
+    if(existing == WebHotKeys.end())
+        WebHotKeys.push_back(item);
+    else
+        *existing = item;
+    return true;
+}
+
+void tTJSNI_BaseWindow::PostWebHotKeys(tjs_uint key, tjs_uint32 shift) {
+    if(key == VK_LWIN)
+        WebHotKeyWindowsKeys |= 1;
+    if(key == VK_RWIN)
+        WebHotKeyWindowsKeys |= 2;
+    tjs_uint32 modifiers = shift & (TVP_SS_SHIFT | TVP_SS_ALT | TVP_SS_CTRL);
+    if(WebHotKeyWindowsKeys)
+        modifiers |= TVPWebHotKeyWindowsModifier;
+    for(auto &item : WebHotKeys) {
+        if(item.Key != key)
+            continue;
+        const bool repeated = item.Pressed;
+        item.Pressed = true;
+        if(Owner && item.Modifiers == modifiers && (item.Repeat || !repeated)) {
+            tTJSVariant args[2] = { item.Id, static_cast<tjs_int>(modifiers) };
+            static ttstr eventname(TJS_W("onHotKeyPressed"));
+            // Queue callbacks so a script may replace/unregister its hotkey
+            // without invalidating the registration walk.
+            TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_POST, 2, args);
+        }
+    }
+}
+
+void tTJSNI_BaseWindow::ReleaseWebHotKey(tjs_uint key) {
+    if(key == VK_LWIN)
+        WebHotKeyWindowsKeys &= ~1u;
+    if(key == VK_RWIN)
+        WebHotKeyWindowsKeys &= ~2u;
+    for(auto &item : WebHotKeys) {
+        if(item.Key == key)
+            item.Pressed = false;
+    }
+}
+#endif
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnKeyPress(tjs_char key) {
     if(!CanDeliverEvents())
@@ -929,6 +1005,30 @@ tTJSNC_Window::tTJSNC_Window() : tTJSNativeClass(TJS_W("Window")) {
         return TJS_S_OK;
     }
     TJS_END_NATIVE_METHOD_DECL(/*func. name*/ postInputEvent)
+    //----------------------------------------------------------------------
+#ifdef __EMSCRIPTEN__
+    TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/ registerHotKey) {
+        if(numparams < 1)
+            return TJS_E_BADPARAMCOUNT;
+        TJS_GET_NATIVE_INSTANCE(/*var. name*/ _this,
+                                /*var. type*/ tTJSNI_Window);
+        const tjs_int id = static_cast<tjs_int>(*param[0]);
+        if(static_cast<tjs_uint>(id) > 0xbfff)
+            return TJS_E_INVALIDPARAM;
+        const tjs_uint key = numparams >= 2
+            ? static_cast<tjs_uint>(static_cast<tjs_int>(*param[1]))
+            : 0;
+        const tjs_uint32 modifiers = numparams >= 3
+            ? static_cast<tjs_uint32>(static_cast<tjs_int>(*param[2]))
+            : 0;
+        const bool repeat = numparams < 3 || (modifiers & TVP_SS_REPEAT);
+        const bool registered = _this->RegisterWebHotKey(id, key, modifiers, repeat);
+        if(result)
+            *result = registered;
+        return TJS_S_OK;
+    }
+    TJS_END_NATIVE_METHOD_DECL(/*func. name*/ registerHotKey)
+#endif
     //----------------------------------------------------------------------
 
     //----------------------------------------------------------------------

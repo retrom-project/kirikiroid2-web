@@ -168,6 +168,21 @@ private:
     std::vector<tTJSVariantClosure> ObjectVector;
     bool ObjectVectorLocked;
 
+#ifdef __EMSCRIPTEN__
+    // Browser shortcuts belong to this virtual window, not the desktop OS.
+    struct tWebHotKey {
+        tjs_int Id;
+        tjs_uint Key;
+        tjs_uint32 Modifiers;
+        bool Repeat;
+        bool Pressed;
+    };
+    std::vector<tWebHotKey> WebHotKeys;
+    tjs_uint32 WebHotKeyWindowsKeys = 0;
+    void PostWebHotKeys(tjs_uint key, tjs_uint32 shift);
+    void ReleaseWebHotKey(tjs_uint key);
+#endif
+
 protected:
     iTJSDispatch2 *Owner;
 
@@ -223,6 +238,10 @@ public:
     void OnMouseLeave();
     void OnKeyDown(tjs_uint key, tjs_uint32 shift);
     void OnKeyUp(tjs_uint key, tjs_uint32 shift);
+#ifdef __EMSCRIPTEN__
+    bool RegisterWebHotKey(tjs_int id, tjs_uint key, tjs_uint32 modifiers,
+                           bool repeat);
+#endif
     void OnKeyPress(tjs_char key);
     void OnFileDrop(const tTJSVariant &array);
     void OnMouseWheel(tjs_uint32 shift, tjs_int delta, tjs_int x, tjs_int y);
