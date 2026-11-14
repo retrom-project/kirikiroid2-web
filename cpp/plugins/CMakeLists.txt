@@ -58,6 +58,7 @@ set(_KRKR2_NCBIND_SOURCES
     layerExBTOA.cpp
     layerExSave.cpp
     layerExRaster.cpp
+    layerExAlpha.cpp
     gfxEffect.cpp
     gfx/GfxFire.cpp
     PackinOne.cpp
