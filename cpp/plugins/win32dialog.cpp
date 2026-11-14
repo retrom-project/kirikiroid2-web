@@ -1,5 +1,9 @@
 
 #include "ncbind.hpp"
+#ifdef __EMSCRIPTEN__
+#include "tjsDictionary.h"
+#include <emscripten.h>
+#endif
 
 #define NCB_MODULE_NAME TJS_W("win32dialog.dll")
 
@@ -54,3 +58,46 @@ delete global.WIN32DialogItems;
 }
 
 NCB_PRE_REGIST_CALLBACK(InitPlugin_WIN32Dialog);
+
+#ifdef __EMSCRIPTEN__
+EM_JS(int, TVPWebDialogSystemUnits, (), {
+    // CSS caption is the browser's system dialog font. Measure its actual
+    // layout instead of importing pixel constants from a Windows desktop.
+    const sample = document.createElement('span');
+    sample.style.cssText = 'all:initial;font:caption;position:fixed;left:-10000px;top:0;white-space:pre;visibility:hidden;';
+    sample.textContent = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    document.body.appendChild(sample);
+    const bounds = sample.getBoundingClientRect();
+    sample.remove();
+    const horizontal = Math.round(bounds.width / 52);
+    const vertical = Math.ceil(bounds.height);
+    if(horizontal <= 0 || vertical <= 0 || horizontal > 65535 || vertical > 65535)
+        throw new Error('Cannot measure the browser dialog font');
+    return (vertical << 16) | horizontal;
+});
+
+namespace {
+    struct WIN32DialogWebGeometry {
+        static tjs_error getBaseUnits(tTJSVariant *result, tjs_int,
+                                      tTJSVariant **, iTJSDispatch2 *) {
+            iTJSDispatch2 *dictionary = TJSCreateDictionaryObject();
+            tTJSVariant value(dictionary, dictionary);
+            dictionary->Release();
+            const tjs_uint32 units = TVPWebDialogSystemUnits();
+            tTJSVariant horizontal(static_cast<tjs_int>(units & 0xffff));
+            tTJSVariant vertical(static_cast<tjs_int>(units >> 16));
+            dictionary->PropSet(TJS_MEMBERENSURE, TJS_W("h"), nullptr,
+                                &horizontal, dictionary);
+            dictionary->PropSet(TJS_MEMBERENSURE, TJS_W("v"), nullptr,
+                                &vertical, dictionary);
+            if(result) *result = value;
+            return TJS_S_OK;
+        }
+    };
+}
+
+NCB_ATTACH_CLASS(WIN32DialogWebGeometry, WIN32Dialog) {
+    RawCallback(TJS_W("getBaseUnits"), &WIN32DialogWebGeometry::getBaseUnits,
+                 0);
+}
+#endif

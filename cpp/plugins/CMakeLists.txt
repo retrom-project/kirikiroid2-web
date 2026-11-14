@@ -33,7 +33,7 @@ if(EMSCRIPTEN)
     find_package(toml11 CONFIG REQUIRED)
     target_sources(${PROJECT_NAME} PRIVATE
         sqlite/Sqlite.cpp steam/SteamWeb.cpp GamepadWeb.cpp LayeredWindowWeb.cpp
-        GlitchEffect.cpp TomlWeb.cpp)
+        GlitchEffect.cpp TomlWeb.cpp Win32DialogWeb.cpp)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         unofficial::sqlite3::sqlite3 toml11::toml11)
 endif()
