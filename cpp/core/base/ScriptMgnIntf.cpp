@@ -1129,6 +1129,20 @@ static bool TJSGetSystem_exceptionHandler_Object(tTJSVariantClosure &dest) {
 }
 
 //---------------------------------------------------------------------------
+#ifdef __EMSCRIPTEN__
+// Host fatal reporting returns so the browser can dispose the engine. A failed
+// game handler must finish here, retaining the original error and releasing its
+// closure only once; the handler result was never assigned on this path.
+template <typename Error, typename HandlerError>
+static bool TVPReportWebExceptionHandlerFailure(Error &original,
+                                               HandlerError &handler) {
+    TVPAddImportantLog(ttstr(TJS_W("System.exceptionHandler failed: ")) +
+                       handler.GetMessage());
+    TVPShowScriptException(original);
+    return true;
+}
+#endif
+
 bool TVPProcessUnhandledException(eTJSScriptException &e) {
     bool result;
     tTJSVariantClosure clo;
@@ -1155,12 +1169,20 @@ bool TVPProcessUnhandledException(eTJSScriptException &e) {
         clo.FuncCall(0, nullptr, nullptr, &res, 1, pval, nullptr);
 
         result = res.operator bool();
-    } catch(eTJSScriptError &e) {
+    } catch(eTJSScriptError &handlerError) {
         clo.Release();
-        TVPShowScriptException(e);
-    } catch(eTJS &e) {
+#ifdef __EMSCRIPTEN__
+        return TVPReportWebExceptionHandlerFailure(e, handlerError);
+#else
+        TVPShowScriptException(handlerError);
+#endif
+    } catch(eTJS &handlerError) {
         clo.Release();
-        TVPShowScriptException(e);
+#ifdef __EMSCRIPTEN__
+        return TVPReportWebExceptionHandlerFailure(e, handlerError);
+#else
+        TVPShowScriptException(handlerError);
+#endif
     } catch(...) {
         clo.Release();
         throw;
@@ -1200,12 +1222,20 @@ bool TVPProcessUnhandledException(eTJSScriptError &e) {
         clo.FuncCall(0, nullptr, nullptr, &res, 1, pval, nullptr);
 
         result = res.operator bool();
-    } catch(eTJSScriptError &e) {
+    } catch(eTJSScriptError &handlerError) {
         clo.Release();
-        TVPShowScriptException(e);
-    } catch(eTJS &e) {
+#ifdef __EMSCRIPTEN__
+        return TVPReportWebExceptionHandlerFailure(e, handlerError);
+#else
+        TVPShowScriptException(handlerError);
+#endif
+    } catch(eTJS &handlerError) {
         clo.Release();
-        TVPShowScriptException(e);
+#ifdef __EMSCRIPTEN__
+        return TVPReportWebExceptionHandlerFailure(e, handlerError);
+#else
+        TVPShowScriptException(handlerError);
+#endif
     } catch(...) {
         clo.Release();
         throw;
@@ -1244,12 +1274,20 @@ bool TVPProcessUnhandledException(eTJS &e) {
         clo.FuncCall(0, nullptr, nullptr, &res, 1, pval, nullptr);
 
         result = res.operator bool();
-    } catch(eTJSScriptError &e) {
+    } catch(eTJSScriptError &handlerError) {
         clo.Release();
-        TVPShowScriptException(e);
-    } catch(eTJS &e) {
+#ifdef __EMSCRIPTEN__
+        return TVPReportWebExceptionHandlerFailure(e, handlerError);
+#else
+        TVPShowScriptException(handlerError);
+#endif
+    } catch(eTJS &handlerError) {
         clo.Release();
-        TVPShowScriptException(e);
+#ifdef __EMSCRIPTEN__
+        return TVPReportWebExceptionHandlerFailure(e, handlerError);
+#else
+        TVPShowScriptException(handlerError);
+#endif
     } catch(...) {
         clo.Release();
         throw;

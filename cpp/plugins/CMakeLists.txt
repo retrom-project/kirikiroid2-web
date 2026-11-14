@@ -30,10 +30,12 @@ target_sources(${PROJECT_NAME} PRIVATE ${_PLUGIN_SOURCES})
 # Native reference reconstruction remains independent of this Web extension.
 if(EMSCRIPTEN)
     find_package(unofficial-sqlite3 CONFIG REQUIRED)
+    find_package(toml11 CONFIG REQUIRED)
     target_sources(${PROJECT_NAME} PRIVATE
         sqlite/Sqlite.cpp steam/SteamWeb.cpp GamepadWeb.cpp LayeredWindowWeb.cpp
-        GlitchEffect.cpp)
-    target_link_libraries(${PROJECT_NAME} PRIVATE unofficial::sqlite3::sqlite3)
+        GlitchEffect.cpp TomlWeb.cpp Win32DialogWeb.cpp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        unofficial::sqlite3::sqlite3 toml11::toml11)
 endif()
 
 # CBinaryAccessor is one native dispatch type shared by xp3filter.dll and the
@@ -56,6 +58,7 @@ set(_KRKR2_NCBIND_SOURCES
     layerExBTOA.cpp
     layerExSave.cpp
     layerExRaster.cpp
+    layerExAlpha.cpp
     gfxEffect.cpp
     gfx/GfxFire.cpp
     PackinOne.cpp
