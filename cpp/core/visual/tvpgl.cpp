@@ -18,6 +18,9 @@
 #include "tjsTypes.h"
 #include "tvpgl.h"
 #include <float.h>
+#ifdef __EMSCRIPTEN__
+#include "ScriptMgnIntf.h"
+#endif
 
 #define __cdecl
 #define TVP_REVRGB(v)                                                          \
@@ -10576,6 +10579,31 @@ TVP_GL_FUNC_DECL(void, TVPInitGammaAdjustTempData_c,
         temp->B[i] = n;
 #endif
     }
+#ifdef __EMSCRIPTEN__
+    if(TVPIsWebKirikiriZMode()) {
+        // Windows Z uses an infinite reciprocal for zero gamma. Its invalid
+        // SSE integer conversions clamp to black; express those entries
+        // explicitly without relying on undefined NaN-to-int conversions.
+        if(data->RGamma == 0.0) {
+            if(signbit(data->RGamma))
+                memset(temp->R, 0, sizeof(temp->R));
+            else
+                temp->R[255] = 0;
+        }
+        if(data->GGamma == 0.0) {
+            if(signbit(data->GGamma))
+                memset(temp->G, 0, sizeof(temp->G));
+            else
+                temp->G[255] = 0;
+        }
+        if(data->BGamma == 0.0) {
+            if(signbit(data->BGamma))
+                memset(temp->B, 0, sizeof(temp->B));
+            else
+                temp->B[255] = 0;
+        }
+    }
+#endif
 }
 
 /*export*/
